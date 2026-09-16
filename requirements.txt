@@ -1,0 +1,9 @@
+# 本地环境（已在 C:\Users\hexin\.conda\envs\llm 验证）
+# 安装：pip install -r requirements.txt
+pydantic>=2.12,<3        # 已验证 2.12.5
+openai>=1.100            # 已验证 1.109.1（DeepSeek/Qwen 走 OpenAI 兼容协议）
+fastapi>=0.110           # 已验证 0.128.0
+uvicorn>=0.30            # 已验证 0.40.0
+python-docx>=1.1         # 已验证 1.2.0（读 .docx 简历）
+langgraph>=0.4           # 已验证 0.4.5（可选：仅 --engine langgraph 与图单测需要）
+# 可选（下一步接入）：sentence-transformers / rank-bm25 / deepeval / langfuse

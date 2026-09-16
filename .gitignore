@@ -1,0 +1,15 @@
+# 运行产物（含真人输入与 trace，绝不入库）
+runs/
+*.pyc
+__pycache__/
+.venv/
+.env
+.env.*
+!.env.example
+# 个人化运行结果（公开前请用 data/resume_sample.md 重跑）
+results/run_personal-*
+# 个人化运行产物（含真实简历文本/匹配证据句，绝不入库）
+results/*personal-*
+results/run_demo-final.json
+results/report_demo-final.md
+results/eval_demo-final.json
