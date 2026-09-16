@@ -21,6 +21,7 @@
 - 弱点追踪：SQLite 持久化，支持**跨场次**聚合（同一弱点在多场里反复出现会被标为 high）
 - 服务化：FastAPI（`/health` `/plan` `/score` `/report/{run_id}` `/stream` SSE 流式）
 - 多轮追问：低分题按"最低分维度"深挖最多 2 层，并统计**追问有效率**（追问后得分提升 >5pp 的比例）
+- 检索层：可选混合检索（本机 bge-large-zh 稠密 + 字符 n-gram BM25 + RRF），**零下载**复用已有模型；默认仍走关键词匹配（原因见下）
 - 单测：`python -m unittest discover -s tests` → 19 项全过（工具 / 编排 / 追问层数 / LangGraph / API SSE）
 
 最近一次真实运行（真实模型 qwen-plus，7 题；输入 = 本机真实简历 + 示例 JD；命令见下）：
@@ -32,6 +33,7 @@
 | 要点覆盖率 point_coverage | 0.462 (18/39) | 评分命中的参考要点 / 全部参考要点 |
 | 综合得分 overall | 0.50 | 各题加权总分均值 |
 | 追问有效率 | 0.50（2 题触发追问，1 题提升；平均提升 38.8pp） | 触发追问且追问后有作答的题里，得分提升 >5pp 的比例（demo-followup） |
+| 选题相关性（keyword vs hybrid） | overlap 0.113 vs 0.085；语义相似度 0.516 vs **0.563** | 两个代理指标**互相矛盾** → 不足以证明混合检索更优，故默认策略不切换（results/select_compare.json） |
 | 机器复核一致性 | 1.00（7/7），MAE 0.044（results/reviewer_scores.csv） | 用"逐条要点判定"这套不同协议重新评一遍再对齐；**只证明评分口径稳定可复现，不等于评分准确** |
 | 与人评一致性 | awaiting_scores（模板已预填 7 行，待人工打分） | 自动分与人评分差值 ≤0.2 视为一致，同时报 MAE；这是唯一还没数字的指标 |
 
@@ -107,7 +109,9 @@ python -m unittest discover -s tests  # 单测
   真正的准确度必须由人评对照（`results/human_scores.csv` 已预填 7 行）→ 这是当前最大缺口
 - 机器复核用的是同一底层模型，一致性天然偏高，别当成效果宣传
 - 题库 100 条为自建，覆盖面依赖作者经验；同一道题在不同 JD 下的权重相同，未做岗位定制
-- 检索是关键词确定性匹配，未接 bge 嵌入（避免在本地再加依赖）；混合检索是下一步
+- 混合检索已实现但**未被证明更优**：公平口径（关键词重叠）关键词法更好、语义口径混合法更好。
+  默认保持关键词；要下结论得靠人工给"选题是否贴岗"打标，这属于下一步
+- 稠密检索走 CPU（本机 6GB 显存留给别的活），100 条题库一次编码约 20 秒，规模上去需要缓存或换 ANN
 - 追问已支持最多 2 层深挖（按最低分维度提问，`--max-followup` 可调）；LangGraph 版目前仍是单层，两版存在这一处能力差异
 - 没有对话式 UI（只有 CLI + API/SSE），演示以终端为主；可当演示视频的旁白脚本
 
@@ -119,6 +123,8 @@ python -m unittest discover -s tests  # 单测
 2. **写入必须幂等**：同一 `run_id` 重跑会重复累计弱点，已改成先删后写（单测覆盖）。
 3. **LangGraph 节点名不能与 state 键同名**：会报 `'match' is already being used as a state key`，节点统一加 `node_` 前缀。
 4. **按类别回答的提示**：演示里"追问不再作答"是刻意的，避免用同一段话重复打分导致虚高。
+5. **sentence-transformers 5.2 与 transformers 4.30 不兼容**（`cannot import name 'is_torch_npu_available'`），
+   直接加载 bge 会失败 → 已加"transformers + 注意力掩码平均池化"回退后端，实测可用（1024 维 bge-large-zh，CPU 编码 100 条题目约 20 秒）。
 
 ## 安全与合规
 

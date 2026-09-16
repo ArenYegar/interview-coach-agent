@@ -19,16 +19,17 @@
 | LangGraph | coach/graph/langgraph_flow.py | 与 engine 行为一致，缺依赖自动降级 | ✅ 单测通过 |
 | 评测 | coach/eval/harness.py | 4 类指标落盘；人评缺失时明确 pending | ✅ |
 | 入口 | run_demo.py / api.py | CLI（含真人模式）+ HTTP/SSE | ✅ SSE 单测通过 |
-| 测试 | tests/*.py | 19 项全过（工具/编排/追问层数/图/API） | ✅ |
+| 测试 | tests/*.py | 22 项全过（工具/编排/追问层数/检索/图/API） | ✅ |
 | 多轮追问 | coach/graph/engine.py `_followup_text` | 按最低分维度深挖，最多 2 层；追问有效率可量化 | ✅ effectiveness=0.5 |
 | 人评校准工具包 | results/human_scores.csv + docs/human_eval_howto.md | 模板预填 7 行，一条命令出 agreement/MAE | ✅ 待人工打分 |
+| 混合检索 | coach/retrieval.py + coach/eval/select_compare.py | 稠密+BM25+RRF；零下载复用本机 bge；对比脚本落盘 | ✅ 默认仍用关键词（代理指标矛盾） |
 | 版本管理 | .git 首次提交 7ccc357 | 本地 commit；个人化产物与 trace 未入库 | ✅ 未 push |
 
 ## 下一步（按优先级）
 
 0. ~~多轮追问~~（已完成，见上表）
 1. **人工校准自动评分**：跑 3 场（不同 JD），人工填 `results/human_scores.csv`，重跑 harness 得出"一致性 + MAE"，这是当前最大缺口
-2. 检索升级为混合检索（bge 嵌入 + BM25 + RRF），与本机既有的 RAG 项目复用
+2. ~~检索升级为混合检索~~（已完成；下一步：人工标注 30~50 条选题质量，才能定"是否切换默认策略"）
 3. ~~追问升级为多轮深挖~~（已完成；下一步：把同一能力补进 LangGraph 版，消除两版差异）
 4. 会话持久化 + Web UI（Streamlit 或 FastAPI+SSE 前端），支持中断恢复演示
 5. 可选：接入 Langfuse 本地容器做 trace 可视化；把 DeepEval 接进 harness 做回归

@@ -74,7 +74,7 @@ def _score_question(q: Question, want: set[str]) -> float:
 
 
 def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None = None,
-                   categories: list[str] | None = None) -> list[Question]:
+                   categories: list[str] | None = None, selector=None) -> list[Question]:
     """覆盖优先选题：先保证每条硬性要求都有一道对口题，再按相关性补齐到 k 题。
 
     为什么这么做：评测里的 coverage_at_k 就是按这个目标设计的 —— 选题要打到岗位要求上，
@@ -85,13 +85,20 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
     picked: list[Question] = []
     used: set[str] = set()
 
+    def relevance(req, q: Question) -> float:
+        """相关性打分：有混合检索器时用 RRF 分（稠密+BM25），否则退回关键词重叠。"""
+        if selector is not None:
+            return selector.score(req.text).get(q.qid, 0.0)
+        want = {x.lower() for x in (req.keywords or [req.text[:6]])}
+        return _score_question(q, want)
+
     for req in [r for r in profile.requirements if r.must_have] or profile.requirements:
         want = {x.lower() for x in (req.keywords or [req.text[:6]])}
-        ranked = sorted(pool, key=lambda q: (-_score_question(q, want), q.qid))
+        ranked = sorted(pool, key=lambda q: (-relevance(req, q), q.qid))
         for q in ranked:
             if q.qid in used:
                 continue
-            if _score_question(q, want) <= 0 and len(picked) >= 1:
+            if relevance(req, q) <= 0 and len(picked) >= 1:
                 continue
             picked.append(q.model_copy(update={"target_req_id": req.req_id})); used.add(q.qid)
             break

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -58,7 +59,15 @@ class CoachEngine:
         elif config.offline():
             self.degraded_reason = "离线模式（未配置 API Key）→ 使用规则打分"
         self.degraded = bool(self.degraded_reason)
-        self.bank = load_bank()            # 题库常驻内存（100 条，检索为确定性打分）
+        self.bank = load_bank()            # 题库常驻内存（100 条）
+        self.selector = None               # COACH_SELECTOR=hybrid 时启用稠密+BM25 混合检索
+        if os.getenv("COACH_SELECTOR", "keyword").lower() == "hybrid":
+            try:
+                from ..retrieval import build_selector
+                self.selector = build_selector(self.bank)
+                self.tracer.emit("selector.ready", detail=f"mode={self.selector.mode}")
+            except Exception as e:
+                self.tracer.emit("selector.unavailable", ok=False, error=str(e)[:160])
         self.transitions: list[str] = []   # 状态迁移轨迹（供演示/汇报）
         self.degraded_steps: list[str] = []  # 降级过的步骤（评估时不能算作"成功"）
 
@@ -79,7 +88,7 @@ class CoachEngine:
 
         with self.tracer.span("tool.plan_questions", f"k={self.max_questions}"):
             questions = plan_questions(profile, k=self.max_questions, bank=self.bank,
-                                       categories=self.categories)
+                                       categories=self.categories, selector=self.selector)
         self._go(f"plan.questions_picked({[q.qid for q in questions]})")
         return Plan(profile=profile, match=match, questions=questions)
 
