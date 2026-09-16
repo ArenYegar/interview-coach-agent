@@ -21,7 +21,7 @@ from ..tools import (aggregate_weakness, cross_session_tags, export_report, load
                      search_bank)
 from ..trace import Tracer
 
-FOLLOWUP_TPL = "你刚才少讲了这几处，请补充具体做法与结果：{missing}"
+FOLLOWUP_TPL = "你在「{dim}」上少讲了：{points}。请补充具体做法、取舍和结果。"
 STRONG = 0.7
 WEAK = 0.4
 
@@ -36,12 +36,15 @@ class Plan:
 class CoachEngine:
     def __init__(self, run_id: str | None = None, max_questions: int | None = None,
                  categories: list[str] | None = None, use_llm: bool = True,
-                 follow_up: bool = True) -> None:
+                 follow_up: bool = True, max_followup: int = 2) -> None:
         self.run_id = run_id or f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
         self.tracer = Tracer(self.run_id)
         self.max_questions = max_questions or config.MAX_QUESTIONS
         self.categories = categories
         self.follow_up = follow_up
+        self.max_followup = max_followup
+        self.followups_triggered = 0
+        self.followups_improved = 0
         self.client = get_client(prefer_real=use_llm)
         self.model = getattr(self.client, "model", "unknown")
         self.degraded_reason = ""
@@ -92,6 +95,14 @@ class CoachEngine:
             self._go(f"score.degraded_to_heuristic({q.qid})")
         return card
 
+    def _followup_text(self, q: Question, card: ScoreCard) -> str:
+        """按最低分维度追问：把该维度没讲到的参考要点点出来，逼出具体做法与结果。"""
+        dims = {d.name: d for d in q.rubric.dims}
+        ranked = sorted(card.dim_scores.items(), key=lambda kv: kv[1]) if card.dim_scores else []
+        dim = ranked[0][0] if ranked else "覆盖度"
+        keys = [k for k in (dims[dim].keywords if dim in dims else []) if k in card.missing] or card.missing
+        return FOLLOWUP_TPL.format(dim=dim, points="、".join(keys[:3]))
+
     # ---------- 3. 一场面试 ----------
     def run(self, jd_text: str, resume_text: str, answers: list[str] | None = None,
             answer_provider: Callable[[Question], str] | None = None) -> SessionReport:
@@ -100,34 +111,45 @@ class CoachEngine:
         turns: list[Turn] = []
         ai = 0
 
-        for q in plan.questions:
+        def take(answer_provider, qid: str, category: str, text: str, rubric):
+            """取一条回答：先按顺序用 answers，再退回 provider；都没有则返回 None。"""
+            nonlocal ai
             if ai < len(answers):
-                ans = answers[ai]; ai += 1
-            elif answer_provider is not None:
-                ans = answer_provider(q)
-            else:
+                a = answers[ai]; ai += 1
+                return a
+            if answer_provider is None:
+                return None
+            return answer_provider(Question(qid=qid, category=category, text=text, rubric=rubric))
+
+        for q in plan.questions:
+            ans = take(answer_provider, q.qid, q.category, q.text, q.rubric)
+            if ans is None:
                 self._go(f"ask.{q.qid}.skipped(no_answer)")
                 break
-
             self._go(f"ask.{q.qid}")
             card = self.score(q, ans)
             turns.append(Turn(qid=q.qid, target_req_id=q.target_req_id, question=q.text,
                               answer=ans, scorecard=card))
 
-            if self.follow_up and card.total < WEAK and len(card.missing) >= 2:
-                fq = FOLLOWUP_TPL.format(missing="、".join(card.missing[:3]))
-                self._go(f"followup.{q.qid}")
-                if ai < len(answers):
-                    fans = answers[ai]; ai += 1
-                elif answer_provider is not None:
-                    fans = answer_provider(Question(qid=q.qid + "-F", category=q.category, text=fq, rubric=q.rubric))
-                else:
-                    fans = ""
-                if fans.strip():
-                    fcard = self.score(Question(qid=q.qid + "-F", category=q.category, text=fq,
-                                                rubric=q.rubric), fans)
-                    turns.append(Turn(qid=q.qid + "-F", target_req_id=q.target_req_id, question=fq,
-                                      answer=fans, scorecard=fcard, follow_up=True))
+            # 多轮深挖：低分且缺口 >=2 时按维度追问，最多 self.max_followup 层
+            layer, cur = 0, card
+            while (self.follow_up and layer < self.max_followup
+                   and cur.total < WEAK and len(cur.missing) >= 2):
+                layer += 1
+                fq = self._followup_text(q, cur)
+                fqid = f"{q.qid}-F{layer}"
+                fans = take(answer_provider, fqid, q.category, fq, q.rubric)
+                if fans is None or not fans.strip():
+                    self._go(f"followup.{fqid}.skipped(no_answer)")
+                    break
+                self._go(f"followup.{fqid}")
+                fcard = self.score(Question(qid=fqid, category=q.category, text=fq, rubric=q.rubric), fans)
+                turns.append(Turn(qid=fqid, target_req_id=q.target_req_id, question=fq, answer=fans,
+                                  scorecard=fcard, follow_up=True, followup_layer=layer))
+                self.followups_triggered += 1
+                if fcard.total > cur.total + 0.05:
+                    self.followups_improved += 1
+                cur = fcard
 
         self._go("aggregate")
         with self.tracer.span("tool.record_session"):

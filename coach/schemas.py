@@ -81,6 +81,7 @@ class Turn(BaseModel):
     answer: str
     scorecard: ScoreCard | None = None
     follow_up: bool = False
+    followup_layer: int = 0
 
 
 class WeaknessStat(BaseModel):

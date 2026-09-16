@@ -40,5 +40,25 @@ class TestEngineOffline(unittest.TestCase):
         self.assertTrue(any(x.startswith("done(") for x in eng.transitions))
 
 
+class TestFollowupLayers(unittest.TestCase):
+    def test_max_two_layers_and_metrics(self):
+        eng = CoachEngine(run_id="unittest-depth", max_questions=3, use_llm=False, max_followup=2)
+        report = eng.run(JD, RESUME, answers=["短答一", "短答二", "短答三", "短答四", "短答五", "短答六"])
+        layers = [t.followup_layer for t in report.turns]
+        self.assertLessEqual(max(layers), 2, "追问层数不得超过 max_followup")
+        self.assertTrue(any(l == 2 for l in layers), "回答持续不达标时应该深挖到第 2 层")
+
+    def test_followup_effectiveness_metric(self):
+        from coach.eval.harness import followup_effectiveness
+        eng = CoachEngine(run_id="unittest-eff", max_questions=2, use_llm=False)
+        # 追问回答覆盖要点 -> 应该体现为提升
+        good = "prompt约束 加 后校验，低置信时拒答，并且用评测集统计引用准确率与拒答率，" + "细节" * 20
+        report = eng.run(JD, RESUME, answers=["不知道", good, "不知道", good])
+        m = followup_effectiveness(report)
+        self.assertIn("followup_effectiveness", m)
+        self.assertGreaterEqual(m["followup_triggered"], 1)
+        self.assertIsNotNone(m["avg_score_gain"])
+
+
 if __name__ == "__main__":
     unittest.main()

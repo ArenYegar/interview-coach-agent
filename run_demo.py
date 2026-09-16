@@ -123,8 +123,9 @@ def main(argv: list[str] | None = None) -> int:
         elif by_cat:
             # 按类别作答：追问（-F 结尾）不再作答，避免用同一段话重复打分
             def provider(q):
-                if q.qid.endswith("-F"):     # 追问不再作答，避免重复打分
-                    return ""
+                base = q.qid.split("-F")[0]
+                if q.qid != base:            # 追问题目：优先用专门的补充回答，没有就跳过
+                    return by_cat.get(q.qid) or by_cat.get("__followup__", "")
                 return by_cat.get(q.qid) or by_cat.get(q.category, by_cat.get("default", ""))
         report = eng.run(jd_text, resume_text, answers=answers, answer_provider=provider)
         run_id = eng.run_id

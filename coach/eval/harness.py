@@ -47,6 +47,31 @@ def coverage_at_k(report: SessionReport, bank_path: str | Path | None = None) ->
             "requirements_total": len(hard), "covered_by_questions": len(hit_ids)}
 
 
+def followup_effectiveness(report: SessionReport) -> dict:
+    """追问有效率：触发追问的题里，追问后得分提升(>5pp)的比例；只统计真有作答的追问。"""
+    by_base: dict[str, list] = {}
+    for t in report.turns:
+        base = t.qid.split("-F")[0]
+        by_base.setdefault(base, []).append(t)
+    triggered = improved = 0
+    gains: list[float] = []
+    for base, ts in by_base.items():
+        primary = next((t for t in ts if not t.follow_up), None)
+        fus = [t for t in ts if t.follow_up and t.scorecard]
+        if primary is None or not fus or primary.scorecard is None or not fus:
+            continue
+        if primary.scorecard.total >= 0.4:      # 未触发追问
+            continue
+        triggered += 1
+        best = max(t.scorecard.total for t in fus)
+        gains.append(round(best - primary.scorecard.total, 4))
+        if best > primary.scorecard.total + 0.05:
+            improved += 1
+    return {"followup_triggered": triggered, "followup_improved": improved,
+            "followup_effectiveness": round(improved / triggered, 4) if triggered else None,
+            "avg_score_gain": round(sum(gains) / len(gains), 4) if gains else None}
+
+
 def _kws(text: str) -> list[str]:
     import re
     return [w for w in re.findall(r"[A-Za-z][A-Za-z0-9+#._/-]{1,20}|[\u4e00-\u9fa5]{2,6}", text)
@@ -87,7 +112,11 @@ def human_agreement(run_id: str, human_csv: str | Path | None = None) -> dict:
     run_path = Path(config.RESULTS_DIR) / f"run_{run_id}.json"
     report = SessionReport(**json.loads(run_path.read_text(encoding="utf-8")))
     auto = {t.qid: t.scorecard.total for t in report.turns if t.scorecard}
-    pairs = [(float(r["human_score"]), auto[r["qid"]]) for r in rows if r["qid"] in auto]
+    filled = [r for r in rows if (r.get("human_score") or "").strip() != ""]
+    if not filled:
+        return {"agreement": None, "status": "awaiting_scores", "rows_template": len(rows),
+                "hint": "模板已就绪但还没打分：把 results/human_scores.csv 的 human_score 列填 0~1，再重跑 harness"}
+    pairs = [(float(r["human_score"]), auto[r["qid"]]) for r in filled if r["qid"] in auto]
     if not pairs:
         return {"agreement": None, "status": "no_matching_qids"}
     n = len(pairs)
@@ -108,6 +137,7 @@ def evaluate(run_id: str | None = None, out_path: str | Path | None = None) -> d
         **tool_success_rate(run_id),
         **coverage_at_k(report),
         **point_coverage(report),
+        **followup_effectiveness(report),
         "human": human_agreement(run_id),
     }
     config.ensure_dirs()
