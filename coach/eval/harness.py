@@ -47,6 +47,66 @@ def coverage_at_k(report: SessionReport, bank_path: str | Path | None = None) ->
             "requirements_total": len(hard), "covered_by_questions": len(hit_ids)}
 
 
+def machine_agreement(run_id: str, bank_path: str | Path | None = None) -> dict:
+    """独立复核一致性：用"逐条要点判定"这套不同协议重新评一遍，再与自动评分对齐。
+
+    注意：这是**机器复核**，不是人评。人评一致性仍由 human_scores.csv 提供。
+    """
+    from ..llm import get_client
+    from ..schemas import ReviewerCheck
+    from ..tools import load_bank
+
+    report = SessionReport(**json.loads(
+        (Path(config.RESULTS_DIR) / f"run_{run_id}.json").read_text(encoding="utf-8")))
+    client = get_client()
+    if hasattr(client, "probe"):
+        ok, why = client.probe()
+        if not ok:
+            return {"agreement": None, "status": "reviewer_unavailable", "reason": why[:120]}
+    bank = {q.qid: q for q in load_bank(bank_path)}
+
+    rows, pairs = [], []
+    for t in report.turns:
+        base = t.qid.split("-F")[0]
+        q = bank.get(base)
+        if not q or not t.scorecard or t.follow_up:
+            continue
+        points = [k for dim in q.rubric.dims for k in dim.keywords]
+        prompt = (
+            f"【问题】{t.question}\n【候选人回答】{t.answer}\n\n"
+            f"【参考要点】{points}\n\n"
+            "请只做一件事：逐条判断上面的参考要点有没有被回答真正覆盖（要求有具体做法或结论，泛泛提到不算）。\n"
+            "covered / missing 都必须从【参考要点】里原文照抄；score = 覆盖数 / 要点总数（0~1，保留两位小数）。\n"
+            "只输出 JSON，schema: " + json.dumps(ReviewerCheck.model_json_schema(), ensure_ascii=False)
+        )
+        try:
+            chk = client.structured("你是严格的技术面试复核员，只输出 JSON。", prompt, ReviewerCheck)
+        except Exception as e:
+            rows.append({"run_id": run_id, "qid": t.qid, "auto": t.scorecard.total,
+                         "reviewer": "", "delta": "", "note": f"复核失败:{type(e).__name__}"})
+            continue
+        auto = round(t.scorecard.total, 4)
+        rev = round(float(chk.score), 4)
+        pairs.append((auto, rev))
+        rows.append({"run_id": run_id, "qid": t.qid, "auto": auto, "reviewer": rev,
+                     "delta": round(rev - auto, 4), "note": ""})
+
+    csv_path = Path(config.RESULTS_DIR) / "reviewer_scores.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["run_id", "qid", "auto", "reviewer", "delta", "note"])
+        w.writeheader()
+        w.writerows(rows)
+
+    if not pairs:
+        return {"agreement": None, "status": "no_pairs", "detail_csv": str(csv_path)}
+    n = len(pairs)
+    mae = sum(abs(a - r) for a, r in pairs) / n
+    agree = sum(1 for a, r in pairs if abs(a - r) <= 0.2) / n
+    return {"agreement": round(agree, 4), "mae": round(mae, 4), "n": n,
+            "protocol": "逐条要点判定 @temp0.3 + 原协议整体打分（两套不同协议）",
+            "label": "机器复核一致性（非人评）", "detail_csv": str(csv_path)}
+
+
 def followup_effectiveness(report: SessionReport) -> dict:
     """追问有效率：触发追问的题里，追问后得分提升(>5pp)的比例；只统计真有作答的追问。"""
     by_base: dict[str, list] = {}
@@ -138,6 +198,7 @@ def evaluate(run_id: str | None = None, out_path: str | Path | None = None) -> d
         **coverage_at_k(report),
         **point_coverage(report),
         **followup_effectiveness(report),
+        "reviewer": machine_agreement(run_id),
         "human": human_agreement(run_id),
     }
     config.ensure_dirs()
@@ -148,7 +209,12 @@ def evaluate(run_id: str | None = None, out_path: str | Path | None = None) -> d
 
 
 def main() -> None:
-    run_id = sys.argv[1] if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    if args and args[0] == "--reviewer":
+        rid = args[1] if len(args) > 1 else _latest_run()
+        print(json.dumps(machine_agreement(rid), ensure_ascii=False, indent=2))
+        return
+    run_id = args[0] if args else None
     print(json.dumps(evaluate(run_id), ensure_ascii=False, indent=2))
 
 

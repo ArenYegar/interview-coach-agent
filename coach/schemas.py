@@ -106,6 +106,14 @@ class SessionReport(BaseModel):
     report_path: str = ""
 
 
+class ReviewerCheck(BaseModel):
+    """独立复核协议：只逐条判定参考要点是否被回答覆盖（不整体打分），用于算复核一致性。"""
+    qid: str
+    covered: list[str] = Field(default_factory=list, description="被覆盖的参考要点（原文照抄）")
+    missing: list[str] = Field(default_factory=list, description="未覆盖的参考要点（原文照抄）")
+    score: float = Field(ge=0.0, le=1.0, description="覆盖要点数 / 全部要点数")
+
+
 class TraceEvent(BaseModel):
     ts: str
     run_id: str
