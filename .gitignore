@@ -13,3 +13,5 @@ results/*personal-*
 results/run_demo-final.json
 results/report_demo-final.md
 results/eval_demo-final.json
+# 单测临时产物
+results/*unittest*
