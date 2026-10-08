@@ -14,9 +14,27 @@ from . import config
 
 T = TypeVar("T", bound=BaseModel)
 
+# token 计量的零值模板：离线/Mock 模式下 token 数没有意义，一律记 0（不编数字）
+ZERO_USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
 
 class LLMError(RuntimeError):
     pass
+
+
+# 思维链类模型（deepseek-reasoner 等）不接受 temperature / response_format，
+# 传了会直接报错——而它可能正躺在降级链里，所以按模型名过滤参数，而不是让整次调用失败。
+# 不支持 response_format 时退化为"提示词要求 JSON + _extract_json 解析修复"路径。
+NO_TEMPERATURE_MODELS = ("deepseek-reasoner",)
+NO_JSON_MODE_MODELS = ("deepseek-reasoner",)
+
+
+def _accepts_temperature(model: str) -> bool:
+    return not any(k in model.lower() for k in NO_TEMPERATURE_MODELS)
+
+
+def _accepts_json_mode(model: str) -> bool:
+    return not any(k in model.lower() for k in NO_JSON_MODE_MODELS)
 
 
 def _extract_json(text: str) -> str:
@@ -40,12 +58,35 @@ class LLMClient:
         key = config.api_key()
         if not key:
             raise LLMError("未找到可用的 API Key（COACH_API_KEY / DASHSCOPE_API_KEY / QWEN_API_KEY ...）")
-        self.client = OpenAI(api_key=key, base_url=config.base_url(), timeout=config.TIMEOUT)
+        self.client = OpenAI(api_key=key, base_url=config.base_url(), timeout=config.timeout())
         self.model_chain = model_chain or config.model_chain()
-        self.temperature = config.TEMPERATURE if temperature is None else temperature
+        self.temperature = config.temperature() if temperature is None else temperature
         self.model = self.model_chain[0]
         self.calls = 0
         self.last_error = ""
+        # token 用量：每次成功调用后从 resp.usage 累加（供应商不回传时按 0 记，不猜）
+        self.usage = dict(ZERO_USAGE)
+        self.usage_by_model: dict[str, dict] = {}
+
+    def usage_snapshot(self) -> dict:
+        """供 tracer 读增量用；Mock 客户端也实现同名方法，保证离线模式不炸。"""
+        return dict(self.usage)
+
+    def _add_usage(self, model: str, usage) -> None:
+        def _g(name: str) -> int:
+            v = getattr(usage, name, None)
+            if v is None and isinstance(usage, dict):
+                v = usage.get(name)
+            try:
+                return int(v or 0)
+            except (TypeError, ValueError):
+                return 0
+        p, c = _g("prompt_tokens"), _g("completion_tokens")
+        t = _g("total_tokens") or (p + c)
+        for k, v in (("calls", 1), ("prompt_tokens", p), ("completion_tokens", c), ("total_tokens", t)):
+            self.usage[k] = self.usage.get(k, 0) + v
+            u = self.usage_by_model.setdefault(model, dict(ZERO_USAGE))
+            u[k] = u.get(k, 0) + v
 
     def probe(self) -> tuple[bool, str]:
         """一次极轻量的可用性探测（列模型），用于避免"静默降级"。"""
@@ -59,21 +100,34 @@ class LLMClient:
     def _raw(self, system: str, user: str, json_mode: bool) -> str:
         last_err: Exception | None = None
         for model in list(self.model_chain):
-            for attempt in range(config.RETRIES):
+            for attempt in range(config.retries()):
                 try:
                     kwargs: dict[str, Any] = dict(
                         model=model,
                         messages=[{"role": "system", "content": system},
                                   {"role": "user", "content": user}],
-                        temperature=self.temperature,
-                        max_tokens=config.MAX_TOKENS,
+                        max_tokens=config.max_tokens(),
                     )
-                    if json_mode:
+                    if _accepts_temperature(model):
+                        kwargs["temperature"] = self.temperature
+                    if json_mode and _accepts_json_mode(model):
                         kwargs["response_format"] = {"type": "json_object"}
+                    _sd = config.seed()
+                    if _sd is not None:               # 仅在显式设置了 COACH_SEED 时才传
+                        kwargs["seed"] = _sd
                     resp = self.client.chat.completions.create(**kwargs)
+                    content = (resp.choices[0].message.content or "").strip()
+                    if not content:
+                        # 推理型模型（如 deepseek-v4-pro）可能把 token 预算全花在 reasoning 上，
+                        # 于是 content 为空——这既不是成功也不是网络错误，记为失败并换下一个模型，
+                        # 绝不把 "" 交给 JSON 解析器（那会伪装成"解析失败"，掩盖真实原因）。
+                        last_err = RuntimeError("模型返回空内容（可能是推理占用全部 token 预算，可调大 COACH_MAX_TOKENS）")
+                        self.last_error = str(last_err)
+                        break
                     self.model = model
                     self.calls += 1
-                    return resp.choices[0].message.content or ""
+                    self._add_usage(model, getattr(resp, "usage", None))
+                    return content
                 except Exception as e:  # 网络/限流/模型不存在
                     last_err = e
                     msg = str(e).lower()
@@ -109,6 +163,11 @@ class MockLLMClient:
     def __init__(self, *_, **__) -> None:
         self.model = "mock-deterministic"
         self.calls = 0
+        self.usage = dict(ZERO_USAGE)
+        self.usage_by_model: dict[str, dict] = {}
+
+    def usage_snapshot(self) -> dict:
+        return dict(self.usage)
 
     def text(self, system: str, user: str) -> str:
         self.calls += 1

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -18,11 +19,14 @@ from ..llm import get_client
 from ..schemas import (JDProfile, MatchResult, Question, ScoreCard, SessionReport, Turn,
                        WeaknessStat)
 from ..tools import (aggregate_weakness, cross_session_tags, export_report, load_bank,
-                     match_resume, parse_jd, plan_questions, record_session, score_answer,
-                     search_bank)
+                     match_resume, parse_jd, plan_questions, recent_question_ids,
+                     record_session, score_answer, search_bank)
 from ..trace import Tracer
 
 FOLLOWUP_TPL = "你在「{dim}」上少讲了：{points}。请补充具体做法、取舍和结果。"
+# 第二层追问必须"换个角度 + 只问上一轮没提过的要点"，否则会变成把同一句话问两遍
+FOLLOWUP_TPL2 = ("换个角度再问一层：「{dim}」里的 {points} 还没落到具体做法上 —— "
+                 "挑一个说说你当时是怎么做的、为此牺牲了什么。")
 STRONG = 0.7
 WEAK = 0.4
 
@@ -37,19 +41,31 @@ class Plan:
 class CoachEngine:
     def __init__(self, run_id: str | None = None, max_questions: int | None = None,
                  categories: list[str] | None = None, use_llm: bool = True,
-                 follow_up: bool = True, max_followup: int = 2) -> None:
+                 follow_up: bool = True, max_followup: int = 2, probe: bool = True,
+                 variety: bool = False, avoid_repeat: bool = False,
+                 seed: int | None = None, trace_append: bool = False) -> None:
         self.run_id = run_id or f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
-        self.tracer = Tracer(self.run_id)
+        # trace_append=True：恢复已有会话（Web 路径）时追加而非清空 trace
+        self.tracer = Tracer(self.run_id, append=trace_append)
         self.max_questions = max_questions or config.MAX_QUESTIONS
         self.categories = categories
         self.follow_up = follow_up
         self.max_followup = max_followup
         self.followups_triggered = 0
         self.followups_improved = 0
+        # 选题多样性（练习模式用）：variety=在"分数接近前列"的候选里随机；
+        # avoid_repeat=避开最近几场出过的题；seed 固定后整场可复现（评测/回归需要）
+        self.variety = variety
+        self.avoid_repeat = avoid_repeat
+        self.seed = seed
+        self.rng = random.Random(seed) if seed is not None else (random.Random() if variety else None)
         self.client = get_client(prefer_real=use_llm)
         self.model = getattr(self.client, "model", "unknown")
+        # 把 LLM 客户端的 token 计量器挂到 tracer 上：每步 span 自动记下这一步花了多少 token，
+        # 于是"一次问答多少 token / 延迟落在哪一段"可以从 trace 复算，而不是靠感觉。
+        self.tracer.set_meter(self.client)
         self.degraded_reason = ""
-        if hasattr(self.client, "probe"):          # 真实客户端才探测
+        if probe and hasattr(self.client, "probe"):   # 真实客户端才探测；恢复已存在的 Web 会话时传 probe=False
             ok, why = self.client.probe()
             if not ok:
                 self.degraded_reason = f"模型不可用（{why[:160]}）→ 本次运行使用规则打分"
@@ -86,9 +102,13 @@ class CoachEngine:
             match = match_resume(resume_text, profile, llm=None)  # 覆盖率走确定性核心
         self._go(f"plan.matched(cover={match.score:.2f},missing={len(match.missing_keywords)})")
 
+        exclude = recent_question_ids() if self.avoid_repeat else None
         with self.tracer.span("tool.plan_questions", f"k={self.max_questions}"):
             questions = plan_questions(profile, k=self.max_questions, bank=self.bank,
-                                       categories=self.categories, selector=self.selector)
+                                       categories=self.categories, selector=self.selector,
+                                       exclude_qids=exclude, rng=self.rng, variety=self.variety)
+        if exclude:
+            self.tracer.emit("plan.avoid_repeat", detail=f"excluded={len(exclude)}")
         self._go(f"plan.questions_picked({[q.qid for q in questions]})")
         return Plan(profile=profile, match=match, questions=questions)
 
@@ -104,13 +124,37 @@ class CoachEngine:
             self._go(f"score.degraded_to_heuristic({q.qid})")
         return card
 
-    def _followup_text(self, q: Question, card: ScoreCard) -> str:
-        """按最低分维度追问：把该维度没讲到的参考要点点出来，逼出具体做法与结果。"""
+    def _followup_points(self, q: Question, card: ScoreCard, asked: set[str] | None = None,
+                         layer: int = 1) -> tuple[str | None, list[str]]:
+        """挑这次要追问的要点。
+
+        规则（2026-09-20 修）：① 优先最低分维度；② 第二层换一个维度，避免与上一层逐字相同；
+        ③ 只挑"还没问过"的要点（asked 记录已问过的关键词）；④ 没有新要点就不要问 —— 返回 (None, [])，
+        宁可少问一层，也不把同一个问题重复抛给用户。
+        """
+        asked = asked or set()
         dims = {d.name: d for d in q.rubric.dims}
         ranked = sorted(card.dim_scores.items(), key=lambda kv: kv[1]) if card.dim_scores else []
-        dim = ranked[0][0] if ranked else "覆盖度"
-        keys = [k for k in (dims[dim].keywords if dim in dims else []) if k in card.missing] or card.missing
-        return FOLLOWUP_TPL.format(dim=dim, points="、".join(keys[:3]))
+        order = [name for name, _ in ranked] or list(dims) or ["覆盖度"]
+        if layer >= 2 and len(order) > 1:            # 换维度：把上一层问过的维度挪到最后
+            order = order[1:] + order[:1]
+        for name in order:
+            dim = dims.get(name)
+            cand = [k for k in (dim.keywords if dim else []) if k in card.missing and k not in asked]
+            if not cand:                             # 该维度的关键词都不在 missing 里 → 放宽到全部缺失要点
+                cand = [k for k in card.missing if k not in asked]
+            if cand:
+                return name, cand[:3]
+        return None, []
+
+    def _followup_text(self, q: Question, card: ScoreCard, asked: set[str] | None = None,
+                       layer: int = 1) -> tuple[str | None, list[str]]:
+        """返回 (追问文案, 被问到的要点)。文案为 None 表示"没有新东西可问了"，调用方应停止追问。"""
+        dim, points = self._followup_points(q, card, asked=asked, layer=layer)
+        if not points:
+            return None, []
+        tpl = FOLLOWUP_TPL if layer <= 1 else FOLLOWUP_TPL2
+        return tpl.format(dim=dim, points="、".join(points)), points
 
     # ---------- 3. 一场面试 ----------
     def run(self, jd_text: str, resume_text: str, answers: list[str] | None = None,
@@ -140,12 +184,18 @@ class CoachEngine:
             turns.append(Turn(qid=q.qid, target_req_id=q.target_req_id, question=q.text,
                               answer=ans, scorecard=card))
 
-            # 多轮深挖：低分且缺口 >=2 时按维度追问，最多 self.max_followup 层
+            # 多轮深挖：低分且缺口 >=2 时按维度追问，最多 self.max_followup 层；
+            # asked 记录"已经问过的要点"，保证第二层不会重复第一层的问题
             layer, cur = 0, card
+            asked: set[str] = set()
             while (self.follow_up and layer < self.max_followup
                    and cur.total < WEAK and len(cur.missing) >= 2):
                 layer += 1
-                fq = self._followup_text(q, cur)
+                fq, asked_points = self._followup_text(q, cur, asked=asked, layer=layer)
+                if fq is None:                       # 没有新要点 → 停止追问，不重复问
+                    self._go(f"followup.{q.qid}.stop(no_new_point)")
+                    break
+                asked.update(asked_points)
                 fqid = f"{q.qid}-F{layer}"
                 fans = take(answer_provider, fqid, q.category, fq, q.rubric)
                 if fans is None or not fans.strip():
@@ -190,6 +240,8 @@ class CoachEngine:
         if weak_turns:
             edits.append(f"优先准备 {weak_turns[0].qid} 这类问题的答法（当前最弱）")
         return SessionReport(run_id=self.run_id, llm_status=(self.degraded_reason or "真实模型可用"),
+                             llm_model=self.model,
+                             cost=self.tracer.summary(),
                              degraded_steps=list(self.degraded_steps),
                              jd_title=plan.profile.title, match=plan.match,
                              turns=turns, weaknesses=weaknesses + history, overall=overall,

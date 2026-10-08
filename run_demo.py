@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -63,6 +64,41 @@ def load_answers(spec: str | None) -> tuple[list[str], dict]:
     return [blk.strip() for blk in txt.split("\n\n") if blk.strip()], {}
 
 
+def check_inputs(jd: str, resume: str, answers: str | None) -> list[str]:
+    """输入体检：文件不存在/为空/答不上的情况给出人话提示，而不是让用户吃一屏 traceback。"""
+    problems: list[str] = []
+    for role, path in (("JD 文件", jd), ("简历文件", resume), ("回答文件", answers)):
+        if not path:
+            if role == "回答文件":
+                continue
+            problems.append(f"{role}：未提供（--jd / --resume 是必填）")
+            continue
+        p = Path(path)
+        if not p.exists():
+            hint = ""
+            if p.suffix.lower() == ".docx":
+                hint = "（简历建议用 .docx / .md / .txt；路径里有空格要加引号）"
+            problems.append(f"{role}：找不到 {path}{hint}")
+        elif p.is_file() and p.stat().st_size == 0:
+            problems.append(f"{role}：文件是空的 {path}")
+    return problems
+
+
+def print_problems(problems: list[str]) -> None:
+    print("\n" + "=" * 70)
+    print("× 没法开跑，先解决下面这几项：")
+    for i, p in enumerate(problems, 1):
+        print(f"  {i}. {p}")
+    print("-" * 70)
+    print("可以这样改：")
+    print("  · 用示例文件先跑通一遍（确认环境没问题）：")
+    print("      --jd data/jd_sample.md --resume data/resume_sample.md")
+    print("  · 用自己的简历：把路径用英文双引号包起来，例如")
+    print('      --resume "C:\\Users\\hexin\\Desktop\\1简历\\校招简历.docx"')
+    print("  · 路径不确定时，在文件资源管理器里右键该文件 → 复制文件地址")
+    print("=" * 70 + "\n")
+
+
 def interactive_provider(q) -> str:
     print("\n" + "=" * 70)
     print(f"[{q.qid} | {q.category} | {q.difficulty}] {q.text}")
@@ -82,27 +118,70 @@ def interactive_provider(q) -> str:
     return "\n".join(lines).strip()
 
 
+def preload_env_file(argv: list[str]) -> tuple[str | None, int]:
+    """在解析参数之前先把 --env-file 读进来。
+
+    原因：argparse 的 default= 是即时求值，而 COACH_MAX_QUESTIONS / COACH_MAX_TOKENS 这些默认值
+    必须来自 .env；等 parse_args 之后才 load_env_file 就晚了（这是原先真实存在的失效点）。
+    """
+    for i, a in enumerate(argv):
+        if a == "--env-file" and i + 1 < len(argv):
+            return argv[i + 1], config.load_env_file(argv[i + 1])
+        if a.startswith("--env-file="):
+            path = a.split("=", 1)[1]
+            return path, config.load_env_file(path)
+    return None, 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    _env_path, _env_loaded = preload_env_file(argv)
     ap = argparse.ArgumentParser(description="多智能体求职陪练 Agent - 本地演示入口")
     ap.add_argument("--jd", required=True, help="JD 文本文件路径（.md/.txt/.docx）")
     ap.add_argument("--resume", required=True, help="简历文件路径（.docx/.md/.txt）")
     ap.add_argument("--answers", help="预置回答（.json 列表，或按空行分隔的 txt）")
     ap.add_argument("--interactive", action="store_true", help="真人练习模式（END 结束一题）")
-    ap.add_argument("--questions", type=int, default=config.MAX_QUESTIONS)
+    ap.add_argument("--questions", type=int, default=config.max_questions())
     ap.add_argument("--engine", choices=["local", "langgraph"], default="local")
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--env-file", default=None, help="可选：读取 .env（不会写入仓库）")
+    ap.add_argument("--seed", type=int, default=None, help="固定选题随机种子（同 seed 可复现同一套题）")
+    ap.add_argument("--no-variety", action="store_true", help="关闭选题多样性（严格复现，评测/回归用）")
+    ap.add_argument("--model", default=None, help="覆盖模型，逗号分隔可给降级链，如 deepseek-chat,deepseek-reasoner")
+    ap.add_argument("--base-url", default=None, help="覆盖 OpenAI 兼容端点，如 https://api.deepseek.com")
     ap.add_argument("--eval", action="store_true", help="跑完自动执行评测 harness")
+    ap.add_argument("--reps", type=int, default=None,
+                    help="每题模型采样次数（默认 1；评测/回归建议 3，取中位数以降低单次采样抖动）")
     args = ap.parse_args(argv)
 
-    loaded = config.load_env_file(args.env_file)
+    bad = check_inputs(args.jd, args.resume, args.answers)
+    if bad:
+        print_problems(bad)
+        return 2
+
+    if args.interactive and not sys.stdin.isatty():
+        print("[提示] --interactive 需要在能打字的终端里跑（当前 stdin 不是交互终端），已改为按 --answers 作答。")
+        args.interactive = False
+
+    loaded = _env_loaded if (args.env_file and _env_path) else config.load_env_file(args.env_file)
+    if args.model:                       # 显式参数优先于 .env
+        os.environ["COACH_MODEL"] = args.model
+    if args.base_url:
+        os.environ["COACH_BASE_URL"] = args.base_url
+    if args.reps:
+        os.environ["COACH_SCORE_REPS"] = str(args.reps)
     config.ensure_dirs()
     jd_text = load_text(args.jd)
     resume_text = load_text(args.resume)
-    print(f"[env] 载入变量 {loaded} 个 | 模式: {'离线(mock)' if config.offline() else '在线(真实模型)'}"
-          f" | base_url 已配置: {bool(config.base_url())}")
+    print(f"[env] 载入变量 {loaded} 个 | 模式: {'离线(mock)' if config.offline() else '在线(真实模型)'}")
+    print(f"[模型] {config.provider_summary()}")
+    print(f"[评测参数] temperature={config.temperature()} | 注入防护 guard={os.getenv('COACH_GUARD', '2')}"
+          f" | 每题采样 reps={config.score_reps()}"
+          + ("  ← reps>1：分数取多次中位数，可比较性更好、成本×reps" if config.score_reps() > 1 else ""))
 
     answers, by_cat = load_answers(args.answers)
+    if args.answers and not answers and not by_cat:
+        print(f"[提示] 回答文件 {args.answers} 里没读到作答内容：本次会只出题、不评分（想评分请用 --interactive 现场作答）。")
 
     if args.engine == "langgraph":
         from coach.graph import run_with_langgraph
@@ -115,8 +194,14 @@ def main(argv: list[str] | None = None) -> int:
         report, run_id = run_with_langgraph(jd_text, resume_text, answers, run_id=args.run_id,
                                             max_questions=args.questions, preset_questions=preset)
     else:
-        eng = CoachEngine(run_id=args.run_id, max_questions=args.questions)
-        print(f"[model] {eng.model} | 题库 {len(eng.bank)} 条")
+        # 真人练习（--interactive）默认开启"多样 + 避开最近做过的题"；脚本演示保持确定性
+        eng = CoachEngine(run_id=args.run_id, max_questions=args.questions,
+                          variety=(args.interactive and not args.no_variety) or args.seed is not None,
+                          avoid_repeat=args.interactive, seed=args.seed)
+        print(f"[model] {eng.model} | 题库 {len(eng.bank)} 条"
+              + (f" | 选题: 多样(seed={args.seed})" if args.seed is not None
+                 else (" | 选题: 多样+避开近 3 场" if (args.interactive and not args.no_variety)
+                       else " | 选题: 确定性")))
         provider = None
         if args.interactive:
             provider = interactive_provider
@@ -146,6 +231,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"报告          : {report.report_path}")
     print(f"JSON          : {config.RESULTS_DIR}/run_{run_id}.json")
     print(f"trace         : {config.RUNS_DIR}/{run_id}/trace.jsonl")
+
+    try:
+        from coach.eval import cost_report as _cost
+        _agg = _cost.aggregate(run_id)
+        _t = _agg["totals"]
+        print(f"LLM 用量      : token {_t.get('total_tokens', 0)}"
+              f"（prompt {_t.get('prompt_tokens', 0)} / completion {_t.get('completion_tokens', 0)}）")
+        print(f"耗时          : LLM 等待 {_t.get('llm_ms', 0)/1000:.1f}s / 墙钟 {_t.get('wall_ms', 0)/1000:.1f}s")
+        print(f"每次问答      : token {_agg['per_turn']['total_tokens']} | {_agg['per_turn']['ms']} ms")
+        print(f"成本账        : {_cost.write(run_id)}")
+    except Exception as e:
+        print(f"[warn] 成本账生成失败：{type(e).__name__}: {e}")
 
     if args.eval:
         print("\n[eval] " + json.dumps(harness.evaluate(run_id), ensure_ascii=False, indent=2))

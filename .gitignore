@@ -15,3 +15,10 @@ results/report_demo-final.md
 results/eval_demo-final.json
 # 单测临时产物
 results/*unittest*
+# DeepSeek 场次（也用真人简历跑过，含简历匹配证据句，绝不入库）
+results/*demo-deepseek*
+# 默认命名的真实场次（run_id 形如 run-20260920-154518-083f）：Web 界面与 CLI 都会产生，
+# 内容含真人简历证据句与作答原文 —— 一律不入库
+results/run_run-*
+results/report_run-*
+results/eval_run-*

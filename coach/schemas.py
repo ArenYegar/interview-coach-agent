@@ -72,6 +72,11 @@ class ScoreCard(BaseModel):
     verdict: Literal["strong", "ok", "weak"] = "ok"
     improvement: str = ""
     method: Literal["llm", "heuristic"] = "heuristic"
+    # 防护触发说明：为空表示没触发（注入防护见 coach/tools/score_answer.py 的 _guard_*）
+    guard: str = ""
+    # 重复采样：reps>1 表示这一题打了多次模型、取中位数（降低单次采样抖动）
+    reps: int = 1
+    sample_totals: list[float] = Field(default_factory=list)
 
 
 class Turn(BaseModel):
@@ -94,6 +99,8 @@ class WeaknessStat(BaseModel):
 class SessionReport(BaseModel):
     run_id: str
     llm_status: str = ""
+    # 本场实际用的模型名（跨模型分数不可直接比较，所以每场必须记录"是谁评的"）
+    llm_model: str = ""
     degraded_steps: list[str] = Field(default_factory=list)
     jd_title: str = ""
     match: MatchResult | None = None
@@ -104,6 +111,8 @@ class SessionReport(BaseModel):
     actions: list[str] = Field(default_factory=list)
     resume_edits: list[str] = Field(default_factory=list)
     report_path: str = ""
+    # 本场成本与延迟汇总（llm_calls / *_tokens / llm_ms / wall_ms），来自 tracer.summary()
+    cost: dict = Field(default_factory=dict)
 
 
 class ReviewerCheck(BaseModel):
@@ -123,3 +132,10 @@ class TraceEvent(BaseModel):
     model: str = ""
     detail: str = ""
     error: str = ""
+    # 单步的 token 用量（由 tracer 从 LLM 客户端读增量写进来）。
+    # 必须给默认值：旧 trace 文件里没有这几个字段，load_trace 还要能加载。
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    # 这一步里实际发生的模型调用次数（重复采样时 >1）；旧 trace 没这个字段，记 0
+    calls: int = 0
