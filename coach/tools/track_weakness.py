@@ -94,3 +94,27 @@ def cross_session_tags(run_id: str | None = None, top: int = 8) -> list[Weakness
                                 last_seen=max(runs_counter.keys())))
     out.sort(key=lambda w: (-w.count, w.tag))
     return out[:top]
+
+def recent_question_ids(limit_runs: int = 3) -> set[str]:
+    """最近 N 场出过的题号（用于练习模式"别每次都遇到同一批题"）。
+
+    只读 qid，不碰作答内容；返回空集表示没有历史场次或读取失败——
+    失败不该阻断出题，所以这里吞掉异常。
+    """
+    try:
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT run_id FROM turns GROUP BY run_id ORDER BY MAX(ts) DESC LIMIT ?",
+                (max(1, int(limit_runs)),)).fetchall()
+            if not rows:
+                return set()
+            ids = [r[0] for r in rows]
+            marks = ",".join("?" * len(ids))
+            qids = c.execute(f"SELECT DISTINCT qid FROM turns WHERE run_id IN ({marks})",
+                             ids).fetchall()
+        out: set[str] = set()
+        for (qid,) in qids:
+            out.add(str(qid).split("-F")[0])          # 追问题号归一到主问题
+        return out
+    except Exception:
+        return set()

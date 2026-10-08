@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
@@ -56,13 +57,23 @@ def machine_agreement(run_id: str, bank_path: str | Path | None = None) -> dict:
     from ..schemas import ReviewerCheck
     from ..tools import load_bank
 
+    csv_path = Path(config.RESULTS_DIR) / "reviewer_scores.csv"
+    if config.offline():
+        # 没有可用 Key 或显式离线：Mock 客户端不支持 ReviewerCheck，
+        # 提前返回，绝不进入"逐题调用 → 失败 → 覆盖旧结果"的路径。
+        return {"agreement": None, "status": "reviewer_unavailable",
+                "reason": "未配置可用的 API Key 或处于离线模式（可用 --env-file 指定）；机器复核需要真实模型",
+                "kept_previous": csv_path.exists(), "detail_csv": str(csv_path),
+                "label": "机器复核一致性（非人评）"}
+
     report = SessionReport(**json.loads(
         (Path(config.RESULTS_DIR) / f"run_{run_id}.json").read_text(encoding="utf-8")))
     client = get_client()
     if hasattr(client, "probe"):
         ok, why = client.probe()
         if not ok:
-            return {"agreement": None, "status": "reviewer_unavailable", "reason": why[:120]}
+            return {"agreement": None, "status": "reviewer_unavailable", "reason": why[:120],
+                    "kept_previous": csv_path.exists(), "detail_csv": str(csv_path)}
     bank = {q.qid: q for q in load_bank(bank_path)}
 
     rows, pairs = [], []
@@ -91,14 +102,20 @@ def machine_agreement(run_id: str, bank_path: str | Path | None = None) -> dict:
         rows.append({"run_id": run_id, "qid": t.qid, "auto": auto, "reviewer": rev,
                      "delta": round(rev - auto, 4), "note": ""})
 
-    csv_path = Path(config.RESULTS_DIR) / "reviewer_scores.csv"
+    if not pairs:
+        # 一条配对都没产生（复核全部失败 / 没有可复核的题目）：
+        # 保留上一次的 reviewer_scores.csv 不覆盖，只汇报状态与首个失败原因。
+        first_err = next((r["note"] for r in rows if r.get("note")), "")
+        return {"agreement": None, "status": "reviewer_failed" if first_err else "no_pairs",
+                "attempted": len(rows), "reason": first_err[:120],
+                "kept_previous": csv_path.exists(),
+                "hint": "复核未产生任何配对，已保留原有的 reviewer_scores.csv 不被覆盖",
+                "detail_csv": str(csv_path), "label": "机器复核一致性（非人评）"}
+
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["run_id", "qid", "auto", "reviewer", "delta", "note"])
         w.writeheader()
         w.writerows(rows)
-
-    if not pairs:
-        return {"agreement": None, "status": "no_pairs", "detail_csv": str(csv_path)}
     n = len(pairs)
     mae = sum(abs(a - r) for a, r in pairs) / n
     agree = sum(1 for a, r in pairs if abs(a - r) <= 0.2) / n
@@ -165,7 +182,8 @@ def human_agreement(run_id: str, human_csv: str | Path | None = None) -> dict:
     if not csv_path.exists():
         return {"agreement": None, "status": "pending_human_scores",
                 "hint": f"请填写 {csv_path}（列：run_id,qid,human_score），再重跑本 harness"}
-    rows = [r for r in csv.DictReader(csv_path.open(encoding="utf-8")) if r.get("run_id") == run_id]
+    with csv_path.open(encoding="utf-8") as f:          # 用 with 收口，避免未关闭文件句柄的 ResourceWarning
+        rows = [r for r in csv.DictReader(f) if r.get("run_id") == run_id]
     if not rows:
         return {"agreement": None, "status": "pending_human_scores", "rows_for_run": 0,
                 "hint": "该 run 还没有人工评分行"}
@@ -191,6 +209,7 @@ def evaluate(run_id: str | None = None, out_path: str | Path | None = None) -> d
         (Path(config.RESULTS_DIR) / f"run_{run_id}.json").read_text(encoding="utf-8")))
     metrics = {
         "run_id": run_id,
+        "llm_model": report.llm_model or "未记录",
         "overall_score": report.overall,
         "questions_asked": len([t for t in report.turns if not t.follow_up]),
         "turns": len(report.turns),
@@ -208,14 +227,28 @@ def evaluate(run_id: str | None = None, out_path: str | Path | None = None) -> d
     return metrics
 
 
-def main() -> None:
-    args = sys.argv[1:]
-    if args and args[0] == "--reviewer":
-        rid = args[1] if len(args) > 1 else _latest_run()
-        print(json.dumps(machine_agreement(rid), ensure_ascii=False, indent=2))
+def main(argv: list[str] | None = None) -> None:
+    """用法（与 run_demo.py 的 --env-file 口径一致）：
+
+      python -m coach.eval.harness <run_id> [--env-file .env] [--out results/eval_x.json]
+      python -m coach.eval.harness --reviewer [run_id] [--env-file .env]
+    """
+    ap = argparse.ArgumentParser(description="评测 harness：把效果变成可复现的数字")
+    ap.add_argument("run_id", nargs="?", default=None, help="不填则取最近一次 run-*")
+    ap.add_argument("--reviewer", action="store_true", help="只跑机器复核一致性")
+    ap.add_argument("--env-file", default=None, help="可选：读取 .env（与 run_demo.py 对齐）")
+    ap.add_argument("--out", default=None, help="评测结果落盘路径（默认 results/eval_<run_id>.json）")
+    a = ap.parse_args(argv)
+
+    loaded = config.load_env_file(a.env_file)
+    if a.env_file:
+        print(f"[env] 载入变量 {loaded} 个 | 模式: {'离线(mock)' if config.offline() else '在线(真实模型)'}",
+              file=sys.stderr)
+
+    if a.reviewer:
+        print(json.dumps(machine_agreement(a.run_id or _latest_run()), ensure_ascii=False, indent=2))
         return
-    run_id = args[0] if args else None
-    print(json.dumps(evaluate(run_id), ensure_ascii=False, indent=2))
+    print(json.dumps(evaluate(a.run_id, out_path=a.out), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>面试陪练 Agent · 上传简历出题</title>
+<style>
+  :root{
+    --navy:#1F3864; --navy2:#2c4d86; --ink:#1b1b1f; --muted:#666e7a;
+    --line:#dbe3f0; --bg:#f2f5fb; --card:#ffffff; --accent:#2563eb;
+    --ok:#15803d; --warn:#b45309; --bad:#b91c1c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  a{color:var(--accent)}
+  .wrap{max-width:1080px;margin:0 auto;padding:22px 20px 60px}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;
+         border-bottom:2px solid var(--navy);padding-bottom:12px;margin-bottom:18px}
+  h1{font-size:21px;margin:0;color:var(--navy);letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:13px;margin-top:4px}
+  .badge{font-size:12.5px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--muted)}
+  .badge.ok{color:var(--ok);border-color:#bfe3c8;background:#f0fdf4}
+  .badge.warn{color:var(--warn);border-color:#fde3bd;background:#fffbeb}
+  .steps{display:flex;gap:8px;margin:0 0 18px;flex-wrap:wrap}
+  .steps div{font-size:12.5px;color:var(--muted);border:1px solid var(--line);background:#fff;
+             padding:4px 10px;border-radius:999px}
+  .steps div.on{color:#fff;background:var(--navy);border-color:var(--navy)}
+  .steps div.done{color:var(--navy);border-color:#b9caf0;background:#eef3ff}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;
+        box-shadow:0 1px 2px rgba(31,56,100,.05)}
+  .card h2{font-size:16px;margin:0 0 12px;color:var(--navy)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .two{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start}
+  @media(max-width:980px){.two{grid-template-columns:1fr}}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  table.fixed{table-layout:fixed}
+  table.fixed td.q{word-break:break-word}
+  table.fixed .nowrap{white-space:nowrap}
+  code{background:#eef3ff;border-radius:4px;padding:1px 5px;font-size:12.5px}
+  .drop{border:2px dashed #b9caf0;border-radius:10px;padding:18px;text-align:center;background:#fafcff;
+        cursor:pointer;transition:.15s;min-height:132px;display:flex;flex-direction:column;justify-content:center;gap:6px}
+  .drop:hover,.drop.over{border-color:var(--accent);background:#f2f7ff}
+  .drop .t{font-weight:600;color:var(--navy)}
+  .drop .h{font-size:12.5px;color:var(--muted)}
+  .drop.filled{border-style:solid;border-color:#b9caf0;background:#f7faff;text-align:left}
+  .fname{font-size:13.5px;color:var(--ink);word-break:break-all}
+  .fmeta{font-size:12px;color:var(--muted)}
+  label{font-size:13px;color:var(--muted);display:block;margin:0 0 6px}
+  textarea,input[type=text],select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+        font:inherit;background:#fff;color:var(--ink)}
+  textarea{min-height:110px;resize:vertical}
+  .row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:14px}
+  .row .grow{flex:1;min-width:220px}
+  button{border:0;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;
+         background:var(--navy);color:#fff;transition:.15s}
+  button:hover{background:var(--navy2)}
+  button.ghost{background:#fff;color:var(--navy);border:1px solid #b9caf0}
+  button.ghost:hover{background:#eef3ff}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .bar{height:8px;background:#e7edf8;border-radius:999px;overflow:hidden;margin:6px 0 2px}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#1F3864);width:0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:6px}
+  .kv b{color:var(--ink);font-weight:600}
+  ul.reqs{margin:8px 0 0;padding-left:18px;font-size:13.5px}
+  ul.reqs li{margin:3px 0}
+  ul.reqs .ok{color:var(--ok)} ul.reqs .no{color:var(--bad)}
+  .qhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .qtag{font-size:12px;padding:2px 9px;border-radius:999px;background:#eef3ff;color:var(--navy);border:1px solid #cfdcf7}
+  .qtag.fu{background:#fff7ed;color:var(--warn);border-color:#fde3bd}
+  .qtext{font-size:16.5px;font-weight:600;color:var(--ink);margin:6px 0 10px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .chip{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;background:#fafcff}
+  .score{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
+  .big{font-size:26px;font-weight:700}
+  .verdict{font-size:12.5px;padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
+  .verdict.strong{color:var(--ok);border-color:#bfe3c8;background:#f0fdf4}
+  .verdict.ok{color:var(--warn);border-color:#fde3bd;background:#fffbeb}
+  .verdict.weak{color:var(--bad);border-color:#f6c9c9;background:#fef2f2}
+  .mini{font-size:13px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+  th{color:var(--navy);background:#f7faff;font-weight:600}
+  pre{margin:0;white-space:pre-wrap;word-break:break-word;font:13px/1.7 "Consolas","Microsoft YaHei",monospace;
+      background:#fafcff;border:1px solid var(--line);border-radius:8px;padding:12px;max-height:420px;overflow:auto}
+  .toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:99;display:none;
+         background:#fee2e2;color:#7f1d1d;border:1px solid #f6c9c9;border-radius:10px;padding:10px 16px;
+         font-size:13.5px;max-width:80vw;box-shadow:0 6px 24px rgba(0,0,0,.12)}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid #ffffff66;border-top-color:#fff;
+        border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .hide{display:none}
+  footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:22px}
+</style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>面试陪练 Agent</h1>
+      <div class="sub">上传简历 + JD → 系统按岗位要求与简历内容出题 → 逐题作答评分（含追问） → 出复盘报告</div>
+    </div>
+    <div id="modelBadge" class="badge">正在检查模型…</div>
+  </header>
+
+  <div class="steps" id="steps">
+    <div data-s="1" class="on">1 上传简历 / JD</div>
+    <div data-s="2">2 解析与出题</div>
+    <div data-s="3">3 逐题作答</div>
+    <div data-s="4">4 复盘报告</div>
+  </div>
+
+  <!-- 步骤 1 -->
+  <section class="hide" id="sec1">
+  <div class="two">
+  <div class="card">
+    <h2>上传材料</h2>
+    <div class="grid">
+      <div class="drop" id="dropResume">
+        <div class="t">简历（必填）</div>
+        <div class="h">拖到这里，或点击选择文件</div>
+        <div class="h">支持 .docx / .pdf / .txt / .md，≤5MB</div>
+      </div>
+      <div class="drop" id="dropJd">
+        <div class="t">JD（可选）</div>
+        <div class="h">拖到这里，或点击选择文件</div>
+        <div class="h">不传就用内置示例 JD</div>
+      </div>
+    </div>
+    <input type="file" id="fileResume" class="hide" accept=".docx,.pdf,.txt,.md,.markdown" />
+    <input type="file" id="fileJd" class="hide" accept=".docx,.pdf,.txt,.md,.markdown" />
+    <div class="row">
+      <div class="grow">
+        <label for="jdPaste">或者直接粘贴 JD 文字（优先级低于上传的文件）</label>
+        <textarea id="jdPaste" placeholder="把岗位 JD 粘进来，例如：- 熟悉 Python 与 FastAPI&#10;- 掌握 RAG 全链路与评测"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="k">出题数量</label>
+        <select id="k">
+          <option value="3">3 题（快速体验）</option>
+          <option value="5" selected>5 题（标准一场）</option>
+          <option value="7">7 题</option>
+          <option value="10">10 题</option>
+        </select>
+      </div>
+      <button id="btnStart">开始出题</button>
+      <button id="btnShuffle" class="ghost">换一套题</button>
+      <span class="mini">每次出题会自动避开最近 3 场做过的题；点「换一套题」立刻重新抽一套</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>最近练过的几场</h2>
+    <div id="recentList" class="mini">加载中…</div>
+    <h2 style="margin-top:18px">流程说明</h2>
+    <ul class="reqs">
+      <li><b>上传</b>：简历必填（.docx / .pdf / .txt / .md），JD 可选；不传就用内置示例 JD。</li>
+      <li><b>出题</b>：先解析岗位要求并与简历逐条对照，再按"先覆盖硬性要求、再平衡类别"选题。</li>
+      <li><b>作答</b>：每题提交后立刻给出得分、命中与缺失的参考要点；答得很弱（&lt;40%）且缺口 ≥2 时追加一层追问。</li>
+      <li><b>报告</b>：结束后汇总逐题表现、弱点画像与简历改写建议，同时落盘一份 Markdown。</li>
+      <li>刷新会自动接着上次未答完的一场；也可用 <code>?run=&lt;run_id&gt;</code> 直接打开某一场。</li>
+    </ul>
+  </div>
+  </div>
+  </section>
+
+  <!-- 步骤 2 -->
+  <section class="card hide" id="sec2">
+    <h2>岗位解析与出题结果</h2>
+    <div class="kv" id="planKv"></div>
+    <div class="bar"><i id="bar1"></i></div>
+    <div id="reqList"></div>
+    <h2 style="margin-top:18px">题目清单</h2>
+    <div id="qlist" class="mini"></div>
+    <div class="row"><button id="btnToAnswer">开始逐题作答</button></div>
+  </section>
+
+  <!-- 步骤 3 -->
+  <section class="card hide" id="sec3">
+    <h2>逐题作答</h2>
+    <div class="kv"><span>进度</span><b id="progText">-</b><span id="progCat"></span></div>
+    <div class="bar"><i id="bar2"></i></div>
+    <div id="qbox" style="margin-top:12px"></div>
+    <div class="row">
+      <div class="grow">
+        <label for="answer">你的回答（尽量讲清：怎么做的 → 取舍 → 结果/数字）</label>
+        <textarea id="answer" placeholder="可以分多段写。提交后系统会按参考要点打分，并在答得很弱时追问一层。"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnSubmit">提交本题</button>
+      <button id="btnFinish" class="ghost">直接结束并出报告</button>
+      <span class="mini" id="tip"></span>
+    </div>
+    <div id="lastResult"></div>
+    <div id="turnLog"></div>
+  </section>
+
+  <!-- 步骤 4 -->
+  <section class="card hide" id="sec4">
+    <h2>复盘报告</h2>
+    <div id="reportTop"></div>
+    <div class="row">
+      <button id="btnMd" class="ghost">查看 Markdown 原文</button>
+      <button id="btnAgain" class="ghost">再练一场</button>
+    </div>
+    <div id="mdBox" class="hide" style="margin-top:12px"><pre id="mdText"></pre></div>
+  </section>
+
+  <footer>interview-coach-agent · 本地运行 · 产物落在 results/ 与 runs/</footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let FILES = { resume:null, jd:null };
+let RUN = null;              // 当前会话 run_id
+let DATA = null;             // 最新 state
+
+function toast(msg, ok){
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  t.style.background = ok ? '#ecfdf5' : '#fee2e2';
+  t.style.color = ok ? '#065f46' : '#7f1d1d';
+  t.style.borderColor = ok ? '#bfe3c8' : '#f6c9c9';
+  clearTimeout(t._tm);
+  t._tm = setTimeout(()=>{ t.style.display='none'; }, 5200);
+}
+function esc(s){
+  return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function setStep(n){
+  document.querySelectorAll('#steps div').forEach(d=>{
+    const s = +d.dataset.s;
+    d.className = s===n ? 'on' : (s<n ? 'done' : '');
+  });
+}
+function show(id){ ['sec1','sec2','sec3','sec4'].forEach(x=>$(x).classList.toggle('hide', x!==id)); }
+function busy(btn, on, text){
+  btn.disabled = on;
+  if(on){ btn._old = btn.innerHTML; btn.innerHTML = '<span class="spin"></span>' + (text||'处理中…'); }
+  else if(btn._old){ btn.innerHTML = btn._old; }
+}
+
+/* ---------- 模型状态 ---------- */
+(async function health(){
+  try{
+    const r = await fetch('/health'); const h = await r.json();
+    const b = $('modelBadge');
+    b.textContent = (h.offline ? '离线模式（规则打分）' : '在线 · ' + (h.model_chain||[]).join(' → ')) + ' · 题库 ' + h.bank_size + ' 条';
+    b.className = 'badge ' + (h.offline ? 'warn' : 'ok');
+  }catch(e){ $('modelBadge').textContent = '无法连接后端'; $('modelBadge').className='badge warn'; }
+})();
+
+/* ---------- 拖拽上传 ---------- */
+function wireDrop(boxId, inputId, key){
+  const box = $(boxId), input = $(inputId);
+  box.addEventListener('click', ()=> input.click());
+  ['dragenter','dragover'].forEach(ev=> box.addEventListener(ev, e=>{ e.preventDefault(); box.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev=> box.addEventListener(ev, e=>{ e.preventDefault(); box.classList.remove('over'); }));
+  box.addEventListener('drop', e=>{
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) pick(f, box, key);
+  });
+  input.addEventListener('change', ()=>{ if(input.files[0]) pick(input.files[0], box, key); });
+}
+function pick(f, box, key){
+  const okExt = /\.(docx|pdf|txt|md|markdown)$/i.test(f.name);
+  if(!okExt){ toast('只支持 .docx / .pdf / .txt / .md 文件：' + f.name); return; }
+  if(f.size > 5*1024*1024){ toast('文件超过 5MB，请只放简历/JD 正文'); return; }
+  FILES[key] = f;
+  box.classList.add('filled');
+  box.innerHTML = '<div class="fname">✓ ' + esc(f.name) + '</div>' +
+                  '<div class="fmeta">' + (f.size/1024).toFixed(1) + ' KB · 点击可重新选择</div>';
+}
+wireDrop('dropResume','fileResume','resume');
+wireDrop('dropJd','fileJd','jd');
+
+/* ---------- 开始出题 ---------- */
+$('btnStart').addEventListener('click', async ()=>{
+  if(!FILES.resume){ toast('请先上传简历（必填）'); return; }
+  const fd = new FormData();
+  fd.append('resume', FILES.resume);
+  if(FILES.jd) fd.append('jd', FILES.jd);
+  fd.append('jd_text', $('jdPaste').value || '');
+  fd.append('k', $('k').value);
+  busy($('btnStart'), true, '正在解析并出题…');
+  try{
+    const r = await fetch('/api/session', { method:'POST', body: fd });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    DATA = j; RUN = j.run_id;
+    localStorage.setItem('ica_run', RUN);
+    renderPlan(j); show('sec2'); setStep(2);
+  }catch(e){ toast('出题失败：' + e.message); }
+  finally{ busy($('btnStart'), false); }
+});
+
+function renderPlan(s){
+  $('planKv').innerHTML =
+    '<span>岗位</span><b>' + esc(s.jd_title || '（未解析）') + '</b>' +
+    '<span>简历</span><b>' + esc(s.resume_name || '-') + '</b>' +
+    '<span>JD 来源</span><b>' + esc(s.jd_name || '-') + '</b>' +
+    '<span>模型</span><b>' + esc(s.llm_model) + '</b>' +
+    '<span>要求覆盖</span><b>' + Math.round((s.match.score||0)*100) + '%</b>' +
+    '<span>题目</span><b>' + s.total_questions + ' 题</b>';
+  $('bar1').style.width = Math.round((s.match.score||0)*100) + '%';
+  const reqs = (s.requirements||[]).map(r=>
+    '<li class="' + (r.matched?'ok':'no') + '">' + (r.matched?'✓':'✗') + ' ' + esc(r.requirement) +
+    (r.must_have?' <span class="mini">（硬性）</span>':'') +
+    (r.evidence? ' <span class="mini">｜简历依据：' + esc(String(r.evidence).slice(0,60)) + '</span>':'') +
+    (r.gap? ' <span class="mini">｜缺口：' + esc(r.gap) + '</span>':'') + '</li>').join('');
+  $('reqList').innerHTML = '<div class="mini">岗位要求逐条对照（' +
+    (s.match.matched_count!=null?s.match.matched_count:'') + (s.missing_keywords||[]).length + '）：</div><ul class="reqs">' + reqs + '</ul>' +
+    (s.match.missing_keywords||[]).length ? '<div class="mini">简历未体现的关键词：' + esc((s.match.missing_keywords||[]).join('、')) + '</div>' : '';
+  $('qlist').innerHTML = '已按"先覆盖硬性要求、再平衡类别"选题，共 ' + s.total_questions + ' 题；点下面的按钮开始逐题作答。';
+}
+$('btnToAnswer').addEventListener('click', ()=>{ show('sec3'); setStep(3); renderQuestion(DATA); });
+$('btnShuffle').addEventListener('click', ()=>{          // 同参数重开一场 = 换一套题（服务端会避开刚用过的题）
+  $('btnStart').click();
+});
+
+/* ---------- 逐题作答 ---------- */
+function renderQuestion(s){
+  const q = s.next;
+  if(!q){
+    $('qbox').innerHTML = '<div class="mini">没有待答的题了，点「直接结束并出报告」。</div>';
+    $('btnSubmit').disabled = true;
+    return;
+  }
+  $('btnSubmit').disabled = false;
+  const pct = Math.round((s.progress||0)*100);
+  $('bar2').style.width = pct + '%';
+  $('progText').textContent = '已回答 ' + s.answered_main + ' / ' + s.total_questions + ' 题' + (q.follow_up ? ' · 当前是追问' : '');
+  $('progCat').textContent = q.category + (q.difficulty ? ' · ' + q.difficulty : '');
+  const chips = (q.rubric||[]).map(d=> '<span class="chip">' + esc(d.name) + '：' + esc((d.keywords||[]).join('、')) + '</span>').join('');
+  $('qbox').innerHTML =
+    '<div class="qhead"><span class="qtag' + (q.follow_up?' fu':'') + '">' +
+      (q.follow_up ? '追问 · 第' + q.layer + '层' : '第 ' + (s.answered_main+1) + ' 题') + '</span>' +
+      '<span class="qtag">' + esc(q.qid) + '</span>' +
+      (q.target_req_id ? '<span class="qtag">对应要求 ' + esc(q.target_req_id) + '</span>' : '') + '</div>' +
+    '<div class="qtext">' + esc(q.text) + '</div>' +
+    '<div class="chips">' + chips + '</div>';
+  renderTurnLog(s);
+  $('answer').value = '';
+  $('answer').focus();
+  $('tip').textContent = q.follow_up ? '这是系统针对上一题的缺口生成的追问，答完自动继续。' : '';
+}
+$('btnSubmit').addEventListener('click', async ()=>{
+  const a = $('answer').value.trim();
+  if(!a){ toast('先写下你的回答再提交'); return; }
+  if(!RUN){ toast('会话已失效，请重新上传简历开始'); return; }
+  busy($('btnSubmit'), true, '评分中…');
+  try{
+    const r = await fetch('/api/session/' + RUN + '/answer', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({answer:a})
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    DATA = j.state;
+    renderScore(j.scorecard);
+    renderQuestion(j.state);
+    if(!j.next) $('tip').textContent = '全部题目已答完，可以出报告了。';
+  }catch(e){ toast('提交失败：' + e.message); }
+  finally{ busy($('btnSubmit'), false); }
+});
+
+function renderScore(c){
+  const cls = c.verdict === 'strong' ? 'strong' : (c.verdict === 'ok' ? 'ok' : 'weak');
+  const label = c.verdict === 'strong' ? '扎实' : (c.verdict === 'ok' ? '一般' : '偏弱');
+  $('lastResult').innerHTML =
+    '<div class="score"><div><div class="big">' + Math.round(c.total*100) + '%</div>' +
+      '<span class="verdict ' + cls + '">' + label + '</span></div>' +
+      '<div class="mini">命中要点：' + (c.evidence&&c.evidence.length? esc(c.evidence.join('、')) : '无') + '<br>' +
+      '缺失要点：' + (c.missing&&c.missing.length? esc(c.missing.join('、')) : '无') +
+      (c.method ? '（打分方式：' + esc(c.method) + '）' : '') + '</div></div>' +
+    (c.improvement ? '<div class="mini" style="margin-top:8px">改进建议：' + esc(c.improvement) + '</div>' : '');
+}
+
+function renderTurnLog(s){
+  const ts = s.turns || [];
+  if(!ts.length){ $('turnLog').innerHTML=''; return; }
+  const rows = ts.map(t=>
+    '<tr><td class="nowrap">' + esc(t.qid) + (t.follow_up?' <span class="mini">追问</span>':'') + '</td>' +
+    '<td class="q">' + esc(String(t.question).slice(0,34)) + '…</td>' +
+    '<td class="nowrap">' + (t.total==null?'-':Math.round(t.total*100)+'%') + '</td>' +
+    '<td>' + (t.missing&&t.missing.length? esc(t.missing.join('、')) : '<span class="mini">全部命中</span>') + '</td></tr>').join('');
+  $('turnLog').innerHTML = '<h2 style="margin-top:18px">本场已答记录（' + ts.length + ' 轮）</h2>' +
+    '<table class="fixed"><tr><th style="width:104px">题号</th><th>题目</th><th style="width:64px">得分</th><th style="width:38%">缺失要点</th></tr>' +
+    rows + '</table>';
+}
+
+/* ---------- 结束与报告 ---------- */
+$('btnFinish').addEventListener('click', async ()=>{
+  if(!RUN){ toast('会话已失效，请重新上传简历开始'); return; }
+  busy($('btnFinish'), true, '汇总中…');
+  try{
+    const r = await fetch('/api/session/' + RUN + '/finish', { method:'POST' });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    renderReport(j); show('sec4'); setStep(4);
+  }catch(e){ toast('出报告失败：' + e.message); }
+  finally{ busy($('btnFinish'), false); }
+});
+
+function renderReport(r){
+  const rows = (r.turns||[]).map(t=>
+    '<tr><td>' + esc(t.qid) + (t.follow_up?' <span class="mini">追问</span>':'') + '</td>' +
+    '<td>' + esc(String(t.question).slice(0,42)) + '…</td>' +
+    '<td>' + (t.total==null?'-':Math.round(t.total*100)+'%') + '</td>' +
+    '<td>' + (t.verdict||'-') + '</td>' +
+    '<td>' + (t.missing&&t.missing.length? esc(t.missing.join('、')) : '-') + '</td></tr>').join('');
+  const weak = (r.weaknesses||[]).slice(0,8).map(w=>
+    '<li>[' + esc(w.severity) + '] ' + esc(w.tag) + ' × ' + w.count + '</li>').join('') || '<li>无明显弱点</li>';
+  const acts = (r.actions||[]).map(a=>'<li>' + esc(a) + '</li>').join('');
+  const edits = (r.resume_edits||[]).map(a=>'<li>' + esc(a) + '</li>').join('');
+  $('reportTop').innerHTML =
+    '<div class="kv"><span>岗位</span><b>' + esc(r.jd_title||'-') + '</b><span>综合得分</span><b>' +
+      Math.round((r.overall||0)*100) + '%</b><span>要求覆盖</span><b>' +
+      Math.round((r.match_score||0)*100) + '%</b><span>模型</span><b>' + esc(r.llm_model) + '</b></div>' +
+    '<div class="bar"><i style="width:' + Math.round((r.overall||0)*100) + '%"></i></div>' +
+    '<h2 style="margin-top:16px">逐题表现</h2><table class="fixed"><tr><th style="width:112px">题号</th><th>题目</th>' +
+      '<th style="width:64px">得分</th><th style="width:64px">判定</th><th style="width:30%">缺失要点</th></tr>' +
+      rows + '</table>' +
+    '<h2 style="margin-top:16px">弱点画像（本场 + 跨场次累计）</h2><ul class="reqs">' + weak + '</ul>' +
+    (acts? '<h2 style="margin-top:16px">下一步行动</h2><ul class="reqs">' + acts + '</ul>' : '') +
+    (edits? '<h2 style="margin-top:16px">简历改写建议</h2><ul class="reqs">' + edits + '</ul>' : '') +
+    '<div class="mini" style="margin-top:12px">Markdown 报告：' + esc(r.report_path||'-') + '</div>';
+}
+$('btnMd').addEventListener('click', async ()=>{
+  const box = $('mdBox');
+  box.classList.toggle('hide');
+  if(!box.classList.contains('hide') && !$('mdText').textContent){
+    const r = await fetch('/api/session/' + RUN + '/report');
+    $('mdText').textContent = r.ok ? await r.text() : ('读取失败：' + r.status);
+  }
+});
+$('btnAgain').addEventListener('click', ()=>{
+  localStorage.removeItem('ica_run'); RUN=null; DATA=null;
+  FILES={resume:null,jd:null};
+  $('dropResume').className='drop'; $('dropJd').className='drop';
+  $('dropResume').innerHTML='<div class="t">简历（必填）</div><div class="h">拖到这里，或点击选择文件</div><div class="h">支持 .docx / .pdf / .txt / .md，≤5MB</div>';
+  $('dropJd').innerHTML='<div class="t">JD（可选）</div><div class="h">拖到这里，或点击选择文件</div><div class="h">不传就用内置示例 JD</div>';
+  $('lastResult').innerHTML=''; $('mdText').textContent=''; $('mdBox').classList.add('hide');
+  show('sec1'); setStep(1); loadRecent();
+});
+
+/* ---------- 最近场次 ---------- */
+async function loadRecent(){
+  const box = $('recentList');
+  try{
+    const r = await fetch('/api/sessions?limit=8');
+    const j = await r.json();
+    const items = j.sessions || [];
+    if(!items.length){ box.innerHTML = '<span class="mini">还没有记录，练完一场就会出现在这里。</span>'; return; }
+    box.innerHTML = '<table class="fixed"><tr><th>岗位</th><th style="width:54px">进度</th><th style="width:74px">状态</th></tr>' +
+      items.map(it=>{
+        const st = it.finished ? '<span class="mini" style="color:var(--ok)">已完成</span>'
+                               : '<span class="mini" style="color:var(--warn)">进行中</span>';
+        return '<tr><td class="q"><a href="?run=' + encodeURIComponent(it.run_id) + '">' +
+          esc(it.jd_title || it.run_id) + '</a><div class="mini">' + esc(it.updated_at) +
+          (it.resume_name ? ' · ' + esc(it.resume_name) : '') + '</div></td>' +
+          '<td class="nowrap">' + it.answered_main + '/' + it.total_questions + '</td><td>' + st + '</td></tr>';
+      }).join('') + '</table>';
+  }catch(e){ box.innerHTML = '<span class="mini">读取失败：' + esc(e.message) + '</span>'; }
+}
+loadRecent();
+
+/* ---------- 刷新恢复 / 带 ?run=<id> 直接打开某一场 ---------- */
+async function resume(){
+  const fromUrl = new URLSearchParams(location.search).get('run');
+  const rid = fromUrl || localStorage.getItem('ica_run');
+  if(!rid) return false;
+  try{
+    const r = await fetch('/api/session/' + rid);
+    if(!r.ok) { if(!fromUrl) localStorage.removeItem('ica_run'); return false; }
+    const s = await r.json();
+    DATA = s; RUN = rid;
+    localStorage.setItem('ica_run', rid);
+    document.title = '面试陪练 Agent · ' + (s.jd_title || rid);
+    if(s.finished){                       // 已结束的场次：直接看报告（finish 是幂等的，会返回已有报告）
+      const rf = await fetch('/api/session/' + rid + '/finish', { method:'POST' });
+      renderReport(await rf.json()); show('sec4'); setStep(4);
+      return true;
+    }
+    renderPlan(s); show('sec3'); setStep(3); renderQuestion(s);
+    toast('已恢复这一场（已回答 ' + s.answered_main + '/' + s.total_questions + '）', true);
+    return true;
+  }catch(e){ return false; }   // 恢复失败就当新的一场
+}
+
+/* ---------- 启动：先尝试恢复，没得恢复就显示上传页 ---------- */
+(async function boot(){
+  const resumed = await resume();
+  if(!resumed){ show('sec1'); setStep(1); }
+})();
+</script>
+</body>
+</html>
