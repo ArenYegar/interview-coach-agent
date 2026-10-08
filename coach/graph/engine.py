@@ -18,8 +18,9 @@ from .. import config
 from ..llm import get_client
 from ..schemas import (JDProfile, MatchResult, Question, ScoreCard, SessionReport, Turn,
                        WeaknessStat)
+from .. import review
 from ..tools import (aggregate_weakness, cross_session_tags, export_report, load_bank,
-                     match_resume, parse_jd, plan_questions, recent_question_ids,
+                     match_resume, parse_jd, plan_questions, propose_weakness, recent_question_ids,
                      record_session, score_answer, search_bank)
 from ..trace import Tracer
 
@@ -43,7 +44,8 @@ class CoachEngine:
                  categories: list[str] | None = None, use_llm: bool = True,
                  follow_up: bool = True, max_followup: int = 2, probe: bool = True,
                  variety: bool = False, avoid_repeat: bool = False,
-                 seed: int | None = None, trace_append: bool = False) -> None:
+                 seed: int | None = None, trace_append: bool = False,
+                 hitl: bool = False, req_weights: dict[str, float] | None = None) -> None:
         self.run_id = run_id or f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
         # trace_append=True：恢复已有会话（Web 路径）时追加而非清空 trace
         self.tracer = Tracer(self.run_id, append=trace_append)
@@ -86,6 +88,11 @@ class CoachEngine:
                 self.tracer.emit("selector.unavailable", ok=False, error=str(e)[:160])
         self.transitions: list[str] = []   # 状态迁移轨迹（供演示/汇报）
         self.degraded_steps: list[str] = []  # 降级过的步骤（评估时不能算作"成功"）
+        # HITL：弱点画像先进 pending，人工确认后才写进跨场次记忆（见 coach/review.py）
+        self.hitl = hitl or config.hitl()
+        self.turns: list[Turn] = []          # 本场轮次（resume_review 需要）
+        # 按 JD 定制的要求权重（见 tools/search_bank.plan_questions 的 req_weights）
+        self.req_weights = req_weights or None
 
     # ---------- 1. 规划 ----------
     def plan(self, jd_text: str, resume_text: str) -> Plan:
@@ -106,7 +113,8 @@ class CoachEngine:
         with self.tracer.span("tool.plan_questions", f"k={self.max_questions}"):
             questions = plan_questions(profile, k=self.max_questions, bank=self.bank,
                                        categories=self.categories, selector=self.selector,
-                                       exclude_qids=exclude, rng=self.rng, variety=self.variety)
+                                       exclude_qids=exclude, rng=self.rng, variety=self.variety,
+                                        req_weights=self.req_weights)
         if exclude:
             self.tracer.emit("plan.avoid_repeat", detail=f"excluded={len(exclude)}")
         self._go(f"plan.questions_picked({[q.qid for q in questions]})")
@@ -157,6 +165,49 @@ class CoachEngine:
         return tpl.format(dim=dim, points="、".join(points)), points
 
     # ---------- 3. 一场面试 ----------
+    def interview_one(self, q: Question, take: Callable[..., "str | None"]) -> list[Turn]:
+        """跑完一道主问题（含最多 max_followup 层追问），返回本题产生的全部轮次。
+
+        抽成独立方法，是为了让「显式状态机」和「LangGraph 版」共用同一段业务逻辑 ——
+        否则两版会各自漂移。README 里曾经真的写着「LangGraph 版只支持单层追问」，
+        根因就是 n_answer 自己重写了一遍打分与追问，没走这条路。
+        """
+        ans = take(q.qid, q.category, q.text, q.rubric)
+        if ans is None:
+            self._go(f"ask.{q.qid}.skipped(no_answer)")
+            return []
+        self._go(f"ask.{q.qid}")
+        card = self.score(q, ans)
+        out: list[Turn] = [Turn(qid=q.qid, target_req_id=q.target_req_id, question=q.text,
+                                answer=ans, scorecard=card)]
+
+        # 多轮深挖：低分且缺口 >=2 时按维度追问，最多 self.max_followup 层；
+        # asked 记录"已经问过的要点"，保证第二层不会重复第一层的问题
+        layer, cur = 0, card
+        asked: set[str] = set()
+        while (self.follow_up and layer < self.max_followup
+               and cur.total < WEAK and len(cur.missing) >= 2):
+            layer += 1
+            fq, asked_points = self._followup_text(q, cur, asked=asked, layer=layer)
+            if fq is None:                       # 没有新要点 → 停止追问，不重复问
+                self._go(f"followup.{q.qid}.stop(no_new_point)")
+                break
+            asked.update(asked_points)
+            fqid = f"{q.qid}-F{layer}"
+            fans = take(fqid, q.category, fq, q.rubric)
+            if fans is None or not fans.strip():
+                self._go(f"followup.{fqid}.skipped(no_answer)")
+                break
+            self._go(f"followup.{fqid}")
+            fcard = self.score(Question(qid=fqid, category=q.category, text=fq, rubric=q.rubric), fans)
+            out.append(Turn(qid=fqid, target_req_id=q.target_req_id, question=fq, answer=fans,
+                            scorecard=fcard, follow_up=True, followup_layer=layer))
+            self.followups_triggered += 1
+            if fcard.total > cur.total + 0.05:
+                self.followups_improved += 1
+            cur = fcard
+        return out
+
     def run(self, jd_text: str, resume_text: str, answers: list[str] | None = None,
             answer_provider: Callable[[Question], str] | None = None) -> SessionReport:
         answers = list(answers or [])
@@ -175,48 +226,30 @@ class CoachEngine:
             return answer_provider(Question(qid=qid, category=category, text=text, rubric=rubric))
 
         for q in plan.questions:
-            ans = take(answer_provider, q.qid, q.category, q.text, q.rubric)
-            if ans is None:
-                self._go(f"ask.{q.qid}.skipped(no_answer)")
+            got = self.interview_one(q, lambda qid, cat, text, rub: take(answer_provider, qid, cat, text, rub))
+            if not got:
                 break
-            self._go(f"ask.{q.qid}")
-            card = self.score(q, ans)
-            turns.append(Turn(qid=q.qid, target_req_id=q.target_req_id, question=q.text,
-                              answer=ans, scorecard=card))
-
-            # 多轮深挖：低分且缺口 >=2 时按维度追问，最多 self.max_followup 层；
-            # asked 记录"已经问过的要点"，保证第二层不会重复第一层的问题
-            layer, cur = 0, card
-            asked: set[str] = set()
-            while (self.follow_up and layer < self.max_followup
-                   and cur.total < WEAK and len(cur.missing) >= 2):
-                layer += 1
-                fq, asked_points = self._followup_text(q, cur, asked=asked, layer=layer)
-                if fq is None:                       # 没有新要点 → 停止追问，不重复问
-                    self._go(f"followup.{q.qid}.stop(no_new_point)")
-                    break
-                asked.update(asked_points)
-                fqid = f"{q.qid}-F{layer}"
-                fans = take(answer_provider, fqid, q.category, fq, q.rubric)
-                if fans is None or not fans.strip():
-                    self._go(f"followup.{fqid}.skipped(no_answer)")
-                    break
-                self._go(f"followup.{fqid}")
-                fcard = self.score(Question(qid=fqid, category=q.category, text=fq, rubric=q.rubric), fans)
-                turns.append(Turn(qid=fqid, target_req_id=q.target_req_id, question=fq, answer=fans,
-                                  scorecard=fcard, follow_up=True, followup_layer=layer))
-                self.followups_triggered += 1
-                if fcard.total > cur.total + 0.05:
-                    self.followups_improved += 1
-                cur = fcard
+            turns.extend(got)
 
         self._go("aggregate")
-        with self.tracer.span("tool.record_session"):
-            n = record_session(self.run_id, turns)
-        weaknesses = aggregate_weakness(self.run_id, top=5)
-        history = cross_session_tags(run_id=self.run_id, top=5)
+        self.turns = turns
+        if self.hitl:
+            # HITL：这一场先不写库，只把"打算写什么"落盘等人确认（跨进程可恢复）
+            proposed = propose_weakness(turns, top=5)
+            prop = review.save_proposal(self.run_id, [w.model_dump() for w in proposed])
+            self._go(f"review.pending({prop})")
+            weaknesses, history = proposed, []
+        else:
+            with self.tracer.span("tool.record_session"):
+                n = record_session(self.run_id, turns)
+            weaknesses = aggregate_weakness(self.run_id, top=5)
+            history = cross_session_tags(run_id=self.run_id, top=5)
 
         report = self._build_report(plan, turns, weaknesses, history)
+        if self.hitl:
+            report.pending_review = True
+            report.review_note = (f"弱点画像尚未写入跨场次记忆：待人工确认（提议文件 {review.proposal_path(self.run_id)}；"
+                                  f"确认入口：run_demo --hitl 或 POST /api/review/{self.run_id}）")
         with self.tracer.span("tool.export_report"):
             export_report(report)
         self._go(f"done(report={report.report_path})")
@@ -232,7 +265,13 @@ class CoachEngine:
         actions = [f"针对「{w.tag}」（出现 {w.count} 次）：先补一段可复述的具体做法与量化结果"
                    for w in weaknesses[:3]]
         if history:
-            actions.append("跨场次反复出现的弱点：" + "、".join(w.tag for w in history[:3]))
+            actions.append("跨场次反复出现的弱点（按衰减后强度排序）："
+                           + "、".join(f"{w.tag}（{w.runs} 场，强度 {w.decayed}）" for w in history[:3]))
+        # 拒答：题库覆盖不到的硬性要求，显式列出来 —— 宁可说"没有对口题"，也不编一道题凑覆盖
+        covered = {q.target_req_id for q in plan.questions if q.target_req_id}
+        uncovered = [f"{r.req_id}：{r.text[:40]}" for r in plan.profile.requirements
+                     if r.must_have and r.req_id not in covered]
+
         edits = []
         for kw in plan.match.missing_keywords[:3]:
             edits.append(f"简历里补上「{kw}」相关的具体动作与结果（岗位要求里有，但简历没体现）")
@@ -245,8 +284,13 @@ class CoachEngine:
                              degraded_steps=list(self.degraded_steps),
                              jd_title=plan.profile.title, match=plan.match,
                              turns=turns, weaknesses=weaknesses + history, overall=overall,
+                             uncovered=uncovered,
                              highlights=highlights or ["（暂无 >=70% 的题）"], actions=actions,
                              resume_edits=edits)
+
+    def resume_review(self, approved_tags: list[str], turns: list[Turn] | None = None) -> dict:
+        """人工确认后提交：把批准的弱点写进跨场次记忆（驳回的不入库）。"""
+        return review.commit(self.run_id, turns if turns is not None else self.turns, approved_tags)
 
     def _go(self, event: str) -> None:
         self.transitions.append(event)

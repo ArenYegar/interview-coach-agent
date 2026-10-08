@@ -42,11 +42,15 @@ class TestMatchResume(unittest.TestCase):
 
 
 class TestBank(unittest.TestCase):
-    def test_bank_has_100_items_and_7_categories(self):
+    def test_bank_invariants(self):
+        """题库只锁"不变量"，不锁条数 —— 条数会随扩充变化（曾写死 100，扩充后一跑就挂）。"""
         bank = load_bank()
-        self.assertEqual(len(bank), 100)
+        self.assertGreaterEqual(len(bank), 100)
         self.assertEqual(len({q.category for q in bank}), 7)
-        self.assertTrue(all(q.rubric.dims for q in bank))
+        self.assertEqual(len({q.qid for q in bank}), len(bank))      # qid 唯一
+        self.assertEqual(len({q.text for q in bank}), len(bank))     # 题目不重复
+        self.assertTrue(all(q.rubric.dims for q in bank))            # 每题都有评分维度
+        self.assertTrue(all(q.skills for q in bank))
 
     def test_search_returns_k_unique(self):
         qs = search_bank("RAG 向量检索 重排", k=5)

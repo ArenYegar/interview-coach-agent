@@ -270,10 +270,24 @@ class WebSession:
         if self.finished and self.report is not None:
             return self._report_dict()
         self.engine._go("aggregate")
-        record_session(self.engine.run_id, self.turns)
-        weaknesses = aggregate_weakness(self.engine.run_id, top=5)
-        history = cross_session_tags(run_id=self.engine.run_id, top=5)
+        from . import config as _config, review
+        from .tools import propose_weakness
+        pending = self.engine.hitl or _config.hitl()
+        if pending:
+            # HITL：与 CLI 入口同一套闸门 —— 先落 pending，人工确认后才写跨场次记忆
+            proposed = propose_weakness(self.turns, top=5)
+            review.save_proposal(self.engine.run_id, [w.model_dump() for w in proposed])
+            weaknesses, history = proposed, []
+        else:
+            record_session(self.engine.run_id, self.turns)
+            weaknesses = aggregate_weakness(self.engine.run_id, top=5)
+            history = cross_session_tags(run_id=self.engine.run_id, top=5)
         report = self.engine._build_report(self.plan, self.turns, weaknesses, history)
+        if pending:
+            report.pending_review = True
+            report.review_note = (f"弱点画像尚未写入跨场次记忆：待人工确认"
+                                  f"（POST /api/review/{self.engine.run_id}，approved 传要点列表；"
+                                  f"传空列表即全部驳回）")
         # Web 路径每个 HTTP 请求都会新建引擎，进程内计数器跨不了请求（报告会显示 calls=0），
         # 所以这里改用"只读 trace 文件"的口径 —— 同一 run_id 的 trace 是追加写的。
         from .trace import cost_summary

@@ -77,6 +77,10 @@ class ScoreCard(BaseModel):
     # 重复采样：reps>1 表示这一题打了多次模型、取中位数（降低单次采样抖动）
     reps: int = 1
     sample_totals: list[float] = Field(default_factory=list)
+    # 是否来自打分缓存（缓存键见 coach/cache.py；命中时不会产生模型调用）
+    cached: bool = False
+    # 引用：每个命中要点配一句回答原文（人可以直接点回原句核对，而不是只信一个分数）
+    citations: list[dict] = Field(default_factory=list)
 
 
 class Turn(BaseModel):
@@ -94,6 +98,9 @@ class WeaknessStat(BaseModel):
     count: int = 1
     severity: Literal["high", "mid", "low"] = "mid"
     last_seen: str = ""
+    # 置信度与新鲜度：出现在几场（跨场次可信度）+ 时间衰减后的强度
+    runs: int = 0
+    decayed: float = 0.0
 
 
 class SessionReport(BaseModel):
@@ -113,6 +120,11 @@ class SessionReport(BaseModel):
     report_path: str = ""
     # 本场成本与延迟汇总（llm_calls / *_tokens / llm_ms / wall_ms），来自 tracer.summary()
     cost: dict = Field(default_factory=dict)
+    # 拒答（知识不足的显式声明）：题库里没有对口题、因而没有出题的硬性要求
+    uncovered: list[str] = Field(default_factory=list)
+    # HITL：弱点画像还在等人工确认、尚未写入跨场次记忆
+    pending_review: bool = False
+    review_note: str = ""
 
 
 class ReviewerCheck(BaseModel):

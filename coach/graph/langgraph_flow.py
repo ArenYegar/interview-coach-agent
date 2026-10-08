@@ -44,18 +44,23 @@ def build_graph(engine: CoachEngine, preset_questions: list | None = None):
         return state
 
     def n_answer(state: CoachState) -> CoachState:
-        from ..schemas import Turn
+        """走 engine.interview_one：打分与追问逻辑只有一份实现，两版不会漂移。
+
+        回答的取法要与 engine.run 完全一致：按"已有轮次序号"顺序消费 answers，
+        追问也照样消耗一条（engine.run 里就是这么做的），否则两版分数会不同。
+        """
         i = state["idx"]
         q = state["questions"][i]
-        answers = state.get("answers") or []
-        if i >= len(answers):
-            return state
-        ans = answers[i]
-        card = engine.score(q, ans)
-        state["turns"] = state.get("turns", []) + [Turn(qid=q.qid, target_req_id=q.target_req_id,
-                                                        question=q.text, answer=ans, scorecard=card)]
+
+        def take(qid, category, text, rubric):
+            k = len(state.get("turns") or [])
+            answers = state.get("answers") or []
+            return answers[k] if k < len(answers) else None
+
+        got = engine.interview_one(q, take)
+        state["turns"] = state.get("turns", []) + got
         state["idx"] = i + 1
-        state["log"] = state.get("log", []) + [f"ask+score {q.qid} -> {card.total:.2f}"]
+        state["log"] = state.get("log", []) + [f"ask+score {q.qid} -> {len(got)} 轮(含追问)"]
         return state
 
     def n_aggregate(state: CoachState) -> CoachState:

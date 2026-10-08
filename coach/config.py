@@ -85,6 +85,20 @@ def timeout() -> float:
     return _env_float("COACH_TIMEOUT", 60)
 
 
+def api_token() -> str:
+    """可选的接口门禁：设了 COACH_API_TOKEN 后 /api/* 与 /report/* 必须带 Bearer Token。
+
+    这是**门禁**不是多租户：单一 token 只回答"谁可以访问"，回答不了"这些场次属于谁"。
+    真正的多租户要 per-user token + 会话归属校验 + 配额，属于后续（文档已写明）。
+    """
+    return os.getenv("COACH_API_TOKEN", "").strip()
+
+
+def hitl() -> bool:
+    """人工确认闸门：COACH_HITL=1 时，弱点画像先进 pending，人工确认后才写库（见 coach/review.py）。"""
+    return os.getenv("COACH_HITL", "0") == "1"
+
+
 def score_reps() -> int:
     """每题的模型采样次数（COACH_SCORE_REPS，默认 1）。
 

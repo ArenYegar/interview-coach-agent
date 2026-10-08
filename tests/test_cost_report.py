@@ -160,9 +160,10 @@ class TestMedianReps(unittest.TestCase):
     """重复采样取中位数：单次打分是随机测量，这里锁住聚合逻辑本身。"""
 
     def setUp(self):
-        self._old = {k: os.environ.get(k) for k in ("COACH_SCORE_REPS", "COACH_GUARD")}
+        self._old = {k: os.environ.get(k) for k in ("COACH_SCORE_REPS", "COACH_GUARD", "COACH_PARALLEL")}
         os.environ["COACH_GUARD"] = "0"      # 先隔离掉防护，只测中位数聚合
         os.environ["COACH_SCORE_REPS"] = "3"
+        os.environ["COACH_PARALLEL"] = "1"   # 本节测聚合逻辑，固定串行才谈得上"第几次采样"
 
     def tearDown(self):
         for k, v in self._old.items():

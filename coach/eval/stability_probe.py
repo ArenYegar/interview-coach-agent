@@ -72,7 +72,7 @@ def run(qids: list[str] | None = None, reps: int = 3, conditions=None, only: lis
     real = hasattr(probe_client, "probe")
     ok, why = probe_client.probe() if real else (False, "无可用模型（Mock 模式，本次结果无意义）")
 
-    keys = ("COACH_TEMPERATURE", "COACH_GUARD", "COACH_SEED", "COACH_SCORE_REPS")
+    keys = ("COACH_TEMPERATURE", "COACH_GUARD", "COACH_SEED", "COACH_SCORE_REPS", "COACH_CACHE")
     saved = {k: os.environ.get(k, "") for k in keys}      # 跑完还原
     out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "reps": reps,
            "model_available": bool(real and ok), "model_note": "" if (real and ok) else why,
@@ -84,6 +84,7 @@ def run(qids: list[str] | None = None, reps: int = 3, conditions=None, only: lis
         todo = [c for c in todo if any(c[0].startswith(t) for t in only)]
     for name, env in todo:
         _apply_env(env)
+        _apply_env({"COACH_CACHE": "0"})      # 探针故意重复测同一输入，必须关缓存
         _apply_env({"COACH_SCORE_REPS": env.get("COACH_SCORE_REPS", "1")})
         try:
             client = LLMClient()
@@ -91,14 +92,18 @@ def run(qids: list[str] | None = None, reps: int = 3, conditions=None, only: lis
             out["conditions"][name] = {"error": f"客户端构造失败: {e}"}
             continue
         out["conditions"][name] = {"env": env, "per_question": {}, }
+        from .. import parallel
         for q in picked:
             ans = answer_for(q, amap)
-            vals, methods = [], []
-            for _ in range(reps):
-                card = score_answer(q, ans, llm=client)
-                vals.append(round(card.total, 4))
-                methods.append(card.method)
-                out["calls"] += int(env.get("COACH_SCORE_REPS", "1")) or 1
+
+            def _one(_i: int, _q=q, _ans=ans):
+                _c = score_answer(_q, _ans, llm=client)
+                return round(_c.total, 4), _c.method
+
+            got = parallel.run_many(_one, range(reps))       # 独立采样 → 并发；顺序保持
+            vals = [g[0] for g in got]
+            methods = [g[1] for g in got]
+            out["calls"] += reps * (int(env.get("COACH_SCORE_REPS", "1")) or 1)
             rng = round((max(vals) - min(vals)) * 100, 1)
             out["conditions"][name]["per_question"][q.qid] = {
                 "values": vals, "methods": methods,

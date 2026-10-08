@@ -89,7 +89,8 @@ def is_direction_jd(profile: JDProfile) -> bool:
 def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None = None,
                    categories: list[str] | None = None, selector=None,
                    exclude_qids: set[str] | None = None, rng=None,
-                   variety: bool = False, direction_boost: bool = True) -> list[Question]:
+                   variety: bool = False, direction_boost: bool = True,
+                   req_weights: dict[str, float] | None = None) -> list[Question]:
     """覆盖优先选题：先保证每条硬性要求都有一道对口题，再按相关性补齐到 k 题。
 
     为什么这么做：评测里的 coverage_at_k 就是按这个目标设计的 —— 选题要打到岗位要求上，
@@ -100,6 +101,11 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
       · rng + variety：在"分数接近前列"的候选里随机挑一个（同 seed 可复现），避免固定一套题；
       · direction_boost：AI 应用方向的 JD，对方向类目加权，并给非方向类目设上限
         （避免"Python 经验"这条要求每次都把 Python GIL / Docker 瘦身这类后端基础题顶上来）。
+
+    2026-10-08 增加 req_weights：**按 JD 定制某条要求的权重**。
+    键可以是 req_id（"R1"）或要求原文里的片段（"RAG"）；命中则该要求的相关性乘这个倍数。
+    用途：同一份题库，不同 JD 的考察重点不同 —— 投 Agent 岗就把 Agent 那条要求权重调高，
+    出题自然向它倾斜（而不是改题库、也不是改全局默认值）。
     """
     bank = bank if bank is not None else load_bank()
     pool = [q for q in bank if (not categories or q.category in categories)]
@@ -113,10 +119,23 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
     off_used = 0
     off_by_cat: dict[str, int] = {}
 
+    def req_weight(req) -> float:
+        """该要求在本份 JD 下的权重倍数（未命中任何键时为 1.0）。"""
+        if not req_weights:
+            return 1.0
+        for key, val in req_weights.items():
+            if key == req.req_id or (key and key in (req.text or "")):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return 1.0
+        return 1.0
+
     def relevance(req, q: Question) -> float:
         """相关性打分：有混合检索器时用 RRF 分（稠密+BM25），否则退回关键词重叠。"""
         base = (selector.score(req.text).get(q.qid, 0.0) if selector is not None
                 else _score_question(q, {x.lower() for x in (req.keywords or [req.text[:6]])}))
+        base *= req_weight(req)
         if direction and q.category in DIRECTION_CATEGORIES:
             base *= 1.25                      # 同等相关时，方向类目的题优先（观感不偏后端）
         return base
@@ -141,8 +160,17 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
     def relevance_of(q: Question) -> float:
         return score_by_id.get(q.qid, 0.0)
 
+    musts = [r for r in profile.requirements if r.must_have] or profile.requirements
+    # 权重的作用点一：高权重的要求**先挑题**（先占有最相关的题，而不是被前面的要求抢走）
+    order = sorted(range(len(musts)), key=lambda i: (-req_weight(musts[i]), i))
+    musts = [musts[i] for i in order]
+    # 权重的作用点二：补齐阶段用"跨全部要求、加权后取最大"，而不是只看最后一条要求
+    all_rel: dict[str, float] = {}
+    for req in musts:
+        for q in pool:
+            all_rel[q.qid] = max(all_rel.get(q.qid, 0.0), relevance(req, q))
     score_by_id: dict[str, float] = {}
-    for req in [r for r in profile.requirements if r.must_have] or profile.requirements:
+    for req in musts:
         want = {x.lower() for x in (req.keywords or [req.text[:6]])}
         ranked = sorted(pool, key=lambda q: (-relevance(req, q), q.qid))
         score_by_id = {q.qid: relevance(req, q) for q in ranked}
@@ -154,6 +182,11 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
         for x in picked:
             seen_now[x.category] = seen_now.get(x.category, 0) + 1
         within = [x for x in ranked if seen_now.get(x.category, 0) < cat_cap]
+        # 相关性为 0 的要求**不许强行对口**：宁可不出题（报告会把它列为"题库未覆盖"），
+        # 也不能把不相干的题标成"覆盖了这条要求" —— 那会让覆盖率虚高。
+        # 实测踩到过：JD 里"熟练使用 Kubernetes"被强行对口成一道 ReAct 题。
+        if relevance_of(ranked[0]) <= 0:
+            continue
         q = pick_from(within, req.req_id) or pick_from(ranked, req.req_id)
         if q is not None:
             picked.append(q); used.add(q.qid)
@@ -168,7 +201,7 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
         seen_cat: dict[str, int] = {}
         for q in picked:
             seen_cat[q.category] = seen_cat.get(q.category, 0) + 1
-        for q in sorted(pool, key=lambda q: (-(relevance_of(q) or _score_question(q, want_all)), q.qid)):
+        for q in sorted(pool, key=lambda q: (-(relevance_of(q) or all_rel.get(q.qid) or _score_question(q, want_all)), q.qid)):
             if q.qid in used:
                 continue
             if seen_cat.get(q.category, 0) >= max(1, k // 3):
@@ -185,7 +218,7 @@ def plan_questions(profile: JDProfile, k: int = 5, bank: list[Question] | None =
                 off_by_cat[q.category] = off_by_cat.get(q.category, 0) + 1
             if len(picked) >= k:
                 break
-        for q in sorted(pool, key=lambda q: (-(relevance_of(q) or _score_question(q, want_all)), q.qid)):
+        for q in sorted(pool, key=lambda q: (-(relevance_of(q) or all_rel.get(q.qid) or _score_question(q, want_all)), q.qid)):
             if len(picked) >= k:
                 break
             if q.qid not in used:

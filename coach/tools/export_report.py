@@ -32,13 +32,28 @@ def export_report(report: SessionReport) -> tuple[Path, Path]:
     if report.match:
         lines += [f"- 简历-岗位要求覆盖率：{report.match.score:.0%}（{'模型+规则' if report.match.method == 'llm+heuristic' else '规则'}口径）",
                   f"- 未覆盖关键词：{'、'.join(report.match.missing_keywords) or '无'}"]
-    lines += [f"- 综合得分：{report.overall:.0%} {_bar(report.overall)}", ""]
+    lines += [f"- 综合得分：{report.overall:.0%} {_bar(report.overall)}"]
+    if report.pending_review:
+        lines += [f"- ⏳ **待人工确认**：{report.review_note}"]
+    lines += [""]
 
     lines += ["## 逐题表现", "", "| 题号 | 分类 | 得分 | 判定 | 缺失要点 |", "| --- | --- | --- | --- | --- |"]
     for t in report.turns:
         sc = t.scorecard
         lines.append(f"| {t.qid} | {t.question[:14]}… | {sc.total:.0%} | {sc.verdict} | {'、'.join(sc.missing[:3]) or '-'} |" if sc
                      else f"| {t.qid} | {t.question[:14]}… | - | - | - |")
+    cits = [(t.qid, t.scorecard.citations) for t in report.turns
+            if t.scorecard and t.scorecard.citations]
+    if cits:
+        lines += ["", "## 逐题依据（引自你的原话，可点回核对）"]
+        for qid, cs in cits:
+            lines.append(f"- **{qid}**")
+            for c in cs[:4]:
+                lines.append(f"  - 「{c.get('point','')}」← {c.get('quote','')}")
+    if report.uncovered:
+        lines += ["", "## 题库未覆盖的硬性要求（未出题，不编题）",
+                  "以下要求当前题库里没有对口题，因此本场**没有**为它们出题 —— 这是知识库的缺口，不是评分结论："]
+        lines += [f"- {u}" for u in report.uncovered]
     lines += ["", "## 弱点画像（本场）"]
     lines += [f"- [{w.severity}] {w.tag} × {w.count}" for w in report.weaknesses] or ["- 无明显弱点"]
     if report.actions:

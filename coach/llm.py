@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -67,6 +68,7 @@ class LLMClient:
         # token 用量：每次成功调用后从 resp.usage 累加（供应商不回传时按 0 记，不猜）
         self.usage = dict(ZERO_USAGE)
         self.usage_by_model: dict[str, dict] = {}
+        self._lock = threading.Lock()   # 并发采样时保护计数与用量
 
     def usage_snapshot(self) -> dict:
         """供 tracer 读增量用；Mock 客户端也实现同名方法，保证离线模式不炸。"""
@@ -83,10 +85,13 @@ class LLMClient:
                 return 0
         p, c = _g("prompt_tokens"), _g("completion_tokens")
         t = _g("total_tokens") or (p + c)
-        for k, v in (("calls", 1), ("prompt_tokens", p), ("completion_tokens", c), ("total_tokens", t)):
-            self.usage[k] = self.usage.get(k, 0) + v
-            u = self.usage_by_model.setdefault(model, dict(ZERO_USAGE))
-            u[k] = u.get(k, 0) + v
+        with self._lock:                # 并发采样时这些累加必须互斥
+            self.model = model
+            self.calls += 1
+            for k, v in (("calls", 1), ("prompt_tokens", p), ("completion_tokens", c), ("total_tokens", t)):
+                self.usage[k] = self.usage.get(k, 0) + v
+                u = self.usage_by_model.setdefault(model, dict(ZERO_USAGE))
+                u[k] = u.get(k, 0) + v
 
     def probe(self) -> tuple[bool, str]:
         """一次极轻量的可用性探测（列模型），用于避免"静默降级"。"""
@@ -124,9 +129,7 @@ class LLMClient:
                         last_err = RuntimeError("模型返回空内容（可能是推理占用全部 token 预算，可调大 COACH_MAX_TOKENS）")
                         self.last_error = str(last_err)
                         break
-                    self.model = model
-                    self.calls += 1
-                    self._add_usage(model, getattr(resp, "usage", None))
+                    self._add_usage(model, getattr(resp, "usage", None))   # 内部加锁并计数
                     return content
                 except Exception as e:  # 网络/限流/模型不存在
                     last_err = e
@@ -177,7 +180,14 @@ class MockLLMClient:
         self.calls += 1
         name = schema.__name__
         if name == "JDProfile":
-            reqs = re.findall(r"(?:^|\n)\s*(?:[-*•]|\d+[.、)])\s*(.+)", user)[:6]
+            # 只解析 <<<BEGIN_JD_TEXT>>> 区块里的 JD 原文。
+            # 踩过的坑：原来直接对整段 prompt 做正则，于是把提示词里的说明行
+            # （「1) 每条要求给出 req_id…」「2) 只输出 JSON…」）当成了岗位要求，
+            # 离线模式下 requirements / 覆盖率 / 选题全被这堆废话污染。
+            block = (re.search(r"<<<BEGIN_JD_TEXT>>>(.+?)<<<END_JD_TEXT>>>", user, re.S)
+                     or re.search(r"【JD 原文】\s*(.+)$", user, re.S))
+            src = block.group(1) if block else user
+            reqs = re.findall(r"(?:^|\n)\s*(?:[-*•]|\d+[.、)])\s*(.+)", src)[:6]
             return schema(
                 title="（mock）AI 应用开发实习生",
                 company="（mock）示例公司",

@@ -14,9 +14,12 @@
 from __future__ import annotations
 
 import os
+import re
 
-from .. import config
+from .. import cache, config, parallel
 from ..schemas import Question, ScoreCard
+
+_SENT_SPLIT = re.compile(r"[。！？!?\n]+")
 
 
 def _guard_level() -> int:
@@ -66,8 +69,27 @@ def heuristic_score(question: Question, answer: str) -> ScoreCard:
 
     verdict = "strong" if total >= 0.7 else ("ok" if total >= 0.4 else "weak")
     improv = ("补充缺失要点：" + "、".join(missing[:4])) if missing else "结构完整，可再补量化结果"
-    return ScoreCard(qid=question.qid, dim_scores=dim_scores, total=total, evidence=sorted(set(evidence)),
-                     missing=sorted(set(missing)), verdict=verdict, improvement=improv, method="heuristic")
+    ev = sorted(set(evidence))
+    return ScoreCard(qid=question.qid, dim_scores=dim_scores, total=total, evidence=ev,
+                     missing=sorted(set(missing)), verdict=verdict, improvement=improv, method="heuristic",
+                     citations=_citations(question, answer, ev))
+
+
+def _citations(question: Question, answer: str, evidence: list[str], limit: str = 80) -> list[dict]:
+    """把命中的每个参考要点配上一句回答原文 —— 这是"可溯源"，不是再让模型总结一遍。
+
+    确定性实现：按句切分回答，取**第一句包含该要点**的句子。
+    于是引用一定真的出自作答，不会被模型编出来；找不到句子就不给这条引用（不硬凑）。
+    """
+    if not evidence or not answer:
+        return []
+    sents = [s.strip() for s in _SENT_SPLIT.split(answer) if s.strip()]
+    out = []
+    for point in evidence:
+        hit = next((s for s in sents if str(point).lower() in s.lower()), "")
+        if hit:
+            out.append({"point": point, "quote": hit if len(hit) <= limit else hit[:limit] + "…"})
+    return out
 
 
 def _score_once(question: Question, answer: str, llm) -> ScoreCard:
@@ -114,6 +136,13 @@ def _score_once(question: Question, answer: str, llm) -> ScoreCard:
     return card
 
 
+def _with_citations(question: Question, answer: str, card: ScoreCard) -> ScoreCard:
+    """统一出口：任何路径产出的卡片都必须带引用（除非回答里确实找不到对应句子）。"""
+    if not card.citations:
+        card.citations = _citations(question, answer, card.evidence)
+    return card
+
+
 def score_answer(question: Question, answer: str, llm=None) -> ScoreCard:
     """评分入口：模型可用时走模型（结构化 ScoreCard），异常一律回退到规则打分。
 
@@ -123,12 +152,23 @@ def score_answer(question: Question, answer: str, llm=None) -> ScoreCard:
     base = heuristic_score(question, answer)
     if llm is None:
         return base
-    cards: list[ScoreCard] = []
-    for _ in range(config.score_reps()):
+    ck = cache.key_of(getattr(llm, "model", "?"), _guard_level(), config.score_reps(),
+                      question.qid, answer, question.rubric.model_dump_json())
+    hit = cache.get(ck)
+    if hit is not None:
+        card = ScoreCard(**hit)
+        card.qid = question.qid
+        card.cached = True
+        return _with_citations(question, answer, card)
+    def _one(_: int):
         try:
-            cards.append(_score_once(question, answer, llm))
+            return _score_once(question, answer, llm)
         except Exception:
-            break                      # 失败就用手上已有的样本；一个都没有时回退规则分
+            return None                # 单次失败不拖垮整题；一个都没成功时回退规则分
+
+    n = config.score_reps()
+    raw = parallel.run_many(_one, range(n)) if n > 1 else [_one(0)]
+    cards: list[ScoreCard] = [c for c in raw if c is not None]
     if not cards:
         return base
     if len(cards) > 1:
@@ -145,4 +185,8 @@ def score_answer(question: Question, answer: str, llm=None) -> ScoreCard:
     card.reps = len(cards)
     if not card.sample_totals:
         card.sample_totals = [round(card.total, 4)]
+    card = _with_citations(question, answer, card)
+    # 只缓存成功走完模型路径的结果（规则兜底是确定性的，缓存它没有意义）
+    if card.method == "llm":
+        cache.put(ck, card.model_dump())
     return card

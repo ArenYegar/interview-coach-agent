@@ -33,6 +33,15 @@
 | 文档同步 | README.md / PLAN.md / .env.example | 指标与限制与实测一致（单测 38、overall 0.37、人评 1.00/0.0371）；补 DeepSeek 切换说明 | ✅ 09-20 |
 | 模型供应商 | coach/config.py + coach/llm.py + run_demo.py | 端点感知模型链（**DeepSeek→deepseek-flash→deepseek-chat**，即 v4 flash；DashScope→qwen-plus/max/turbo）；`--model/--base-url` 覆盖；启动打印 `[模型] 端点+链路`；思维链模型自动摘掉 temperature/response_format | ✅ 09-20 **已用真实 Key 跑通**；默认模型已按要求切为 **deepseek-flash（v4 flash）** —— flash 场次实测 overall 0.695 / 工具成功率 1.00 / 无降级 |
 | 模型记录 | schemas.py + engine.py + export_report.py + harness.py | 每场在 run json 与报告头部记录 `llm_model`，eval 同步输出；旧产物缺字段仍可加载 | ✅ 09-20 |
+| 题库扩充到 202 条 | coach/eval/bank_drafts.py + bank_tools.py | 草稿池→校验→合并三步；校验查重题/rubric/关键词过泛 | ✅ 2026-10-08 100→202 条（102 条机器草稿待人工抽查） |
+| 引用与拒答 | coach/tools/score_answer.py + export_report.py | 评分带原话引用（确定性抽取）；题库缺口显式声明 | ✅ 2026-10-08（含 2 个连带 bug：Mock 解析提示词说明行、选题强行对口） |
+| 记忆时间衰减与置信度 | coach/tools/track_weakness.py | 21 天半衰期 + 出现在几场 | ✅ 2026-10-08 |
+| 效果归因 | coach/eval/attribute.py | 整场分拆成覆盖系数 × 答题均分 + 工具耗时 | ✅ 2026-10-08 |
+| 可打印 HTML / 定制权重 / 门禁 | export_html.py + search_bank.req_weights + api 中间件 | PDF 走零依赖方案；权重让高权重要求先挑题 | ✅ 2026-10-08（119 项单测） |
+| 结果缓存 + 并发采样 | coach/cache.py + coach/parallel.py + llm.py/trace.py 加锁 | 缓存键含所有影响输出的输入；并发只加在独立调用上 | ✅ 2026-10-08 缓存默认关（开了会掩盖抖动）、并发默认 4（`--reps 3` 不再多花时间） |
+| LangGraph 版补齐多轮追问 | coach/graph/engine.py `interview_one` + langgraph_flow.py | 两版共用同一段业务逻辑，逐轮一致 | ✅ 2026-10-08 抽出 interview_one；新增逐轮一致性单测（qid+分数完全相同） |
+| 人工确认闸门（HITL） | coach/review.py + engine/session/run_demo/api.py | 弱点画像先进 pending，人确认后才入库；驳回要真生效 | ✅ 2026-10-08 实测：5 条提议只批准 1 条 → 入库 4 轮、驳回 4 条不进画像 |
+| JD 侧注入评测 | coach/eval/injection_suite.py `run_jd` | 判定只算"指令被执行"，不算"被如实收录" | ✅ 2026-10-08 实测 17% → 0%（第一版口径把"被收录"算带偏得 67%，属假指标，已修正） |
 | 面试背书文档 | docs/interview_backing.md | 四个高频追问各配五段答法 + 实测反例；数字与产物文件一一对应 | ✅ 2026-10-08 写成（成本与延迟 / 提示注入 / 评测抖动 / 静默失败） |
 | 评测稳定性探针 | coach/eval/stability_probe.py + coach/config.py + coach/tools/score_answer.py | 分出抖动来源；给出可用修法并量化改善 | ✅ 2026-10-08：temp=0 无效(6.0pp)、seed 更糟(25pp)、中位数×3 降到 2.5pp（最大 5.0pp） |
 | Web 路径可观测性缺陷 | coach/trace.py + coach/session.py | Web 会话的 trace 必须完整（不能每次请求清空）；报告成本口径与 CLI 一致 | ✅ 2026-10-08 抓到并修：原先 Web 报告 cost=0、trace 只剩 1 行；修后 calls=4 / 6,643 token / 13 行 trace |
@@ -45,13 +54,15 @@
 0. ~~多轮追问~~（已完成，见上表）
 1. **人工校准**：~~第一场 7 题~~ 已完成（agreement 1.00 / MAE 0.0371）。当前最大缺口＝**样本量**：再跑 2 场（不同 JD，`--interactive` 真人作答，`personal-*` 命名）把评分题数提到 ≥15，一致率才有统计意义
 2. ~~检索升级为混合检索~~（已完成；下一步：人工标注 30~50 条选题质量，才能定"是否切换默认策略"）
-3. ~~追问升级为多轮深挖~~（已完成；下一步：把同一能力补进 LangGraph 版，消除两版差异）
+3. ~~追问升级为多轮深挖~~（已完成）——**下一步也已完成**：抽出 `engine.interview_one` 让两版共用同一段业务逻辑，LangGraph 版自动获得多轮追问；新增逐轮一致性单测（qid + 分数完全相同）
 4. ~~会话持久化 + Web UI~~（已完成：FastAPI + 单文件前端，拖拽上传、逐题作答、报告、可恢复）
    —— 下一步可选：报告导出 PDF、题库按 JD 定制权重、多用户鉴权
-5. 评测口径稳定性（已完成，见 `docs/eval_stability.md`）—— 实测 temp=0 无效、seed 更糟，改用「每题采样 3 次取中位数」：平均极差 6.0pp → 2.5pp。下一步：把 `--reps 3` 写进评测/回归的默认命令，并在比较脚本里加「差异 > 噪声带才下结论」的判定
+5. 评测口径稳定性（已完成，见 `docs/eval_stability.md`）—— 实测 temp=0 无效、seed 更糟，改用「每题采样 3 次取中位数」：平均极差 6.0pp → 2.5pp
+   —— 下一步已完成：`eval_run.cmd`（固定口径：确定性选题 + `--reps 3`）+ `coach/eval/compare_runs.py`（差异 vs 噪声带，判定线来源会打印出来）
 5. ~~提示注入对抗与防护~~（已完成，见上表）—— 下一步：把 JD 侧的注入也纳入评测（当前攻击样本集中在作答侧），并给注入口径加一条"多轮累积"的用例
 5. ~~成本与延迟账~~（已完成，见上表）—— 下一步：接入**结果缓存**（同一问题不重复花钱）与**并发检索**，再复跑一遍对比每轮耗时
-5. 题库扩充（当前 100 条）：方向类目题量偏少时，'换题'很快会抽完 —— 扩到 200~300 条才能真正实现'每次都不一样'
+5. ~~题库扩充~~：已扩到 **202 条**（100 人工校过 + 102 机器草稿，`coach/eval/gold_bank_draft.jsonl` →
+   `bank_tools validate` 0 错误 → `merge --yes` 合并）。**待办：人工抽查草稿池**（校验报告 `results/bank_validation.md`）
 5. 机器复核复跑：**需带 `--env-file`**（harness 已支持），否则会标 `reviewer_unavailable`（这是预期行为，不再覆盖旧结果）
 6. ~~换 DeepSeek 跑一场真模型~~ 已完成（代码 + 真 Key 均已验证）。下一步：**用 DeepSeek 跑一场真人 `--interactive`**，它同时满足"真人一场"和"人评样本 ≥15 题"两项目标（建议 run-id 用 `personal-*`）
 7. 可选：接入 Langfuse 本地容器做 trace 可视化；把 DeepEval 接进 harness 做回归

@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from coach import config
@@ -21,7 +21,22 @@ from coach.ingest import IngestError, text_from_bytes, text_from_path
 from coach.session import SessionNotFound, WebSession
 from coach.tools import load_bank
 
-app = FastAPI(title="interview-coach-agent", version="0.2.0")
+app = FastAPI(title="interview-coach-agent", version="0.3.0")
+
+
+@app.middleware("http")
+async def _auth_gate(request, call_next):
+    """可选门禁：设了 COACH_API_TOKEN 就要求 Bearer Token（只挡 /api/* 与 /report/*）。
+
+    /health 保持开放便于探活；首页不挡（没有数据的页面看到也没意义）。
+    """
+    token = config.api_token()
+    path = request.url.path
+    if token and (path.startswith("/api/") or path.startswith("/report/")):
+        if request.headers.get("authorization", "") != f"Bearer {token}":
+            return JSONResponse(
+                {"detail": "未授权：需要 Authorization: Bearer <COACH_API_TOKEN>"}, status_code=401)
+    return await call_next(request)
 WEB_DIR = Path(__file__).resolve().parent / "web"
 DEFAULT_JD = Path(__file__).resolve().parent / "data" / "jd_sample.md"
 
@@ -198,3 +213,38 @@ def session_report_md(run_id: str) -> PlainTextResponse:
     if not md_path.exists():                 # 状态说结束了但文件不在：明确报错，不返回空内容
         raise HTTPException(status_code=404, detail="报告文件不存在，请重新 finish 一次")
     return PlainTextResponse(md_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+
+
+# ---------------- HITL：人工确认闸门 ----------------
+class ReviewReq(BaseModel):
+    approved: list[str] = []
+
+
+@app.post("/api/review/{run_id}")
+def review_pending(run_id: str, req: ReviewReq) -> dict:
+    """把本场弱点画像写入跨场次记忆 —— 但只写 `approved` 里列出的要点。
+
+    传空列表 = 全部驳回（这一场不进画像）。这是"Agent 提议、人来放行"里人放行的那个动作。
+    """
+    from coach import review as review_mod
+    try:
+        s = WebSession.load(run_id, use_llm=False)
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {run_id}")
+    prop = review_mod.load_proposal(run_id)
+    if prop is None:
+        raise HTTPException(status_code=409, detail="本场没有待确认的提议（未开 HITL，或已经处理过）")
+    if prop.get("applied"):
+        return {"ok": True, "already_applied": True, "approved": prop.get("approved", [])}
+    res = review_mod.commit(run_id, s.turns, req.approved)
+    return {"ok": True, **res}
+
+
+@app.get("/api/session/{run_id}/report.html", include_in_schema=False)
+def report_html(run_id: str):
+    """可打印的报告页：浏览器打开后 Ctrl+P 直接存 PDF（零依赖方案）。"""
+    md = Path(config.RESULTS_DIR) / f"report_{run_id}.md"
+    if not md.exists():
+        raise HTTPException(status_code=404, detail=f"报告不存在: {run_id}（先 finish 一次）")
+    from coach.tools.export_html import export_html
+    return FileResponse(export_html(md), media_type="text/html; charset=utf-8")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -150,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default=None, help="覆盖模型，逗号分隔可给降级链，如 deepseek-chat,deepseek-reasoner")
     ap.add_argument("--base-url", default=None, help="覆盖 OpenAI 兼容端点，如 https://api.deepseek.com")
     ap.add_argument("--eval", action="store_true", help="跑完自动执行评测 harness")
+    ap.add_argument("--weight", default="", help='按 JD 定制要求权重，如 "R1=2,RAG=1.5,R3=0.5"')
+    ap.add_argument("--html", action="store_true",
+                    help="额外导出一份可打印 HTML（浏览器 Ctrl+P 直接存 PDF，零依赖）")
+    ap.add_argument("--hitl", action="store_true",
+                    help="人工确认闸门：弱点画像先落 pending，跑完后由你确认是否写入跨场次记忆")
     ap.add_argument("--reps", type=int, default=None,
                     help="每题模型采样次数（默认 1；评测/回归建议 3，取中位数以降低单次采样抖动）")
     args = ap.parse_args(argv)
@@ -170,6 +176,18 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["COACH_BASE_URL"] = args.base_url
     if args.reps:
         os.environ["COACH_SCORE_REPS"] = str(args.reps)
+    if args.hitl:
+        os.environ["COACH_HITL"] = "1"
+    req_weights = {}
+    for part in (args.weight or "").split(","):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            try:
+                req_weights[k.strip()] = float(v)
+            except ValueError:
+                print(f"[warn] --weight 里的 {part!r} 不是合法倍数，已忽略")
+    if req_weights:
+        print("[评测参数] 要求权重: " + ", ".join(f"{k}x{v}" for k, v in req_weights.items()))
     config.ensure_dirs()
     jd_text = load_text(args.jd)
     resume_text = load_text(args.resume)
@@ -195,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
                                             max_questions=args.questions, preset_questions=preset)
     else:
         # 真人练习（--interactive）默认开启"多样 + 避开最近做过的题"；脚本演示保持确定性
-        eng = CoachEngine(run_id=args.run_id, max_questions=args.questions,
+        eng = CoachEngine(run_id=args.run_id, max_questions=args.questions, hitl=args.hitl,
+                          req_weights=req_weights or None,
                           variety=(args.interactive and not args.no_variety) or args.seed is not None,
                           avoid_repeat=args.interactive, seed=args.seed)
         print(f"[model] {eng.model} | 题库 {len(eng.bank)} 条"
@@ -231,6 +250,34 @@ def main(argv: list[str] | None = None) -> int:
     print(f"报告          : {report.report_path}")
     print(f"JSON          : {config.RESULTS_DIR}/run_{run_id}.json")
     print(f"trace         : {config.RUNS_DIR}/{run_id}/trace.jsonl")
+
+    if args.html and getattr(report, "report_path", None):
+        from coach.tools.export_html import export_html
+        hp = export_html(report.report_path)
+        print("\n可打印 HTML : %s（浏览器打开后 Ctrl+P 存 PDF）" % hp)
+    if args.hitl and report.pending_review:
+        print("\n" + "=" * 70)
+        print("待你确认：以下弱点画像将写入【跨场次记忆】，会长期影响后续场次的练习重点")
+        for i, w in enumerate(report.weaknesses, 1):
+            print(f"  {i}. {w.tag} × {w.count} [{w.severity}]")
+        try:
+            raw = input("全部入库输 y ｜ 全部驳回输 n ｜ 只入库部分输编号（如 1,3）：").strip().lower()
+        except EOFError:
+            raw = "n"
+        if raw == "y":
+            approved = [w.tag for w in report.weaknesses]
+        elif raw == "n":
+            approved = []
+        else:
+            picks = {int(x) for x in re.findall(r"\d+", raw)}
+            approved = [w.tag for i, w in enumerate(report.weaknesses, 1) if i in picks]
+        if locals().get("eng") is not None:
+            res = eng.resume_review(approved)
+            print(f"[HITL] 已提交：入库 {res['committed_turns']} 轮；批准弱点 {len(res['approved'])} 条，"
+                  f"驳回 {len(report.weaknesses) - len(res['approved'])} 条（驳回的不进画像）")
+        else:
+            print("[HITL] 这是 LangGraph 入口，请用 engine 入口跑 --hitl，或调用 /api/review/{}".format(run_id))
+        print("=" * 70)
 
     try:
         from coach.eval import cost_report as _cost

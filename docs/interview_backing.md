@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | 一次问答花多少 token、多少延迟？最长的一段在哪？ | 延迟 99.8% 在等模型，规则与落盘只占 22 毫秒 | 11 次调用 / 16,680 token / 墙钟 48.0 s / 每题 1,505.6 token、4.42 s | `results/cost_cost-demo-7.json`、`report_cost-demo-7.md` |
 | 2 | 上传的文件里塞指令，能把你的 Agent 带偏吗？ | 能，但只有一种话术能骗过去；加了防护后 0% | 关闭防护 14%（1/7）→ 提示层隔离 0% → 再加输出校验 0% | `results/injection_injection-run1.json`、`docs/injection_defense.md` |
-| 3 | 同一份输入重复跑，分数能差多少？你的"提升"可信吗？ | 单题最多差 30pp；temperature=0 消不掉、seed 更糟，只有取中位数有效 | 原始 5.5pp → 中位数×3 后 2.5pp（最大 11.0pp → 5.0pp） | `results/stability_probe-run1.json`、`stability_probe-E.json` |
+| 3 | 同一份输入重复跑，分数能差多少？你的"提升"可信吗？ | 单题最多差 30pp；temperature=0 消不掉、seed 更糟，中位数×3 只能压掉约三成 | 10 题口径：单次 10.8pp（最大 24pp）→ 中位数×3 后 7.6pp（最大 19pp） | `results/stability_noiseband-single.json`、`-median3.json` |
 | 4 | 你怎么知道每条路径都真的被测到了？ | 有一条路径在默默返回 0（Web 报告调用数=0、trace 只剩 1 行） | CLI 11 次 vs Web 0 次 → 修复后 Web 4 次 / 6,643 token / 13 行 trace | `docs/bugs_and_fixes.md` 第 9 条 + `tests/test_cost_report.py` |
 
 ---
@@ -118,7 +118,7 @@
 
 ## 1. 一句话版（10 秒）
 
-"同一模型、同一份输入、同一套题连跑两场，单题最多差 30pp。我先做分组探针把来源分清：**temperature 设 0 消不掉、加 seed 反而更糟、prompt 变更也不是主因 —— 它就是采样噪声**。所以我把'一次测量'换成'每题采 3 次取中位数'，平均极差从 6.0pp 降到 2.5pp。"
+"同一模型、同一份输入、同一套题连跑两场，单题最多差 30pp。我先做分组探针把来源分清：**temperature 设 0 消不掉、加 seed 反而更糟、prompt 变更也不是主因 —— 它就是采样噪声**。所以我把'一次测量'换成'每题采 3 次取中位数'，极差降了约三成。**这里我犯过一次错**：一开始只拿 2 道题算，得出'6pp 降到 2.5pp'，看着提升很大；扩到 10 题×5 次之后真实数字是 10.8pp 降到 7.6pp，我撤销了那个说法 —— 小样本会骗人。"
 
 ## 2. 完整版（60~90 秒，分四层）
 
